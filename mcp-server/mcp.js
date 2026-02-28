@@ -248,113 +248,94 @@ async function main() {
     }
   );
 
+  // ── Snapshot helper ───────────────────────────────────────────────
+  // Signals the Designer Extension to capture the live page DOM,
+  // then polls until the snapshot arrives (or times out).
+  async function requestSnapshot(siteId) {
+    const relayUrl = registry.relayUrl;
+
+    // Ask extension to capture
+    let reqRes;
+    try {
+      reqRes = await fetch(
+        `${relayUrl}/snapshot/request?siteId=${encodeURIComponent(siteId)}`,
+        { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' }
+      );
+    } catch (e) {
+      return {
+        error: `Cannot reach relay at ${relayUrl}. ` +
+               `Run 'plinth dev' in your project folder first.`,
+      };
+    }
+    if (!reqRes.ok) {
+      return { error: `Relay returned ${reqRes.status} for snapshot request.` };
+    }
+
+    // Poll up to 30 s for the extension to respond
+    const deadline = Date.now() + 30_000;
+    while (Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 2000));
+      try {
+        const snapRes = await fetch(
+          `${relayUrl}/snapshot?siteId=${encodeURIComponent(siteId)}`
+        );
+        if (snapRes.ok) {
+          return { snapshot: await snapRes.json() };
+        }
+      } catch { /* keep polling */ }
+    }
+
+    return {
+      error: 'Snapshot timed out after 30 s. ' +
+             'Make sure the Designer Extension is open and connected to the relay.',
+    };
+  }
+
   // ── get_page_dom ──────────────────────────────────────────────────
   server.tool(
     'get_page_dom',
-    'Get the full element tree of a Webflow page. Returns a structured summary showing all ' +
-    'sections, containers, and elements with their types and class names. Use this to understand ' +
-    'what already exists on a page before queuing a BuildPlan — prevents building duplicate sections.',
+    'Capture a live snapshot of the current page as seen in the Webflow Designer. ' +
+    'Triggers the Designer Extension to traverse the element tree and return element types, ' +
+    'class names, and text — use this before queuing a BuildPlan to see what sections already ' +
+    'exist and avoid duplicates. The extension must be open for this to work.',
     {
-      siteId:  z.string().describe('The Webflow site ID'),
-      pageId:  z.string().describe('The page ID (from list_pages)'),
+      siteId: z.string().describe('The Webflow site ID'),
     },
-    async ({ siteId, pageId }) => {
-      let client;
-      try {
-        client = registry.getClient(siteId);
-      } catch (e) {
-        return fail(e.message);
-      }
+    async ({ siteId }) => {
+      const { snapshot, error } = await requestSnapshot(siteId);
+      if (error) return fail(error);
 
-      let dom;
-      try {
-        dom = await client.getPageDom(pageId);
-      } catch (e) {
-        return fail(`Failed to get page DOM: ${e.message}`);
-      }
-
-      // Debug: show top-level keys when nodes are missing
-      const nodes = dom.nodes || [];
-      if (nodes.length === 0) {
-        const keys = Object.keys(dom || {});
-        const firstNode = dom.nodes !== undefined ? '(nodes key exists but empty)' : '(no nodes key)';
-        return ok(
-          `Page DOM returned 0 nodes.\n` +
-          `Response keys: ${keys.join(', ')}\n` +
-          `Notes key: ${firstNode}\n` +
-          `Raw sample: ${JSON.stringify(dom).slice(0, 500)}\n\n` +
-          `NOTE: The Webflow Data API reflects the *saved* state of a page, not live Designer changes. ` +
-          `If you built content via the Designer Extension but haven't saved/published, the DOM API ` +
-          `will show an empty or older version.`
-        );
-      }
-
-      // Webflow DOM API returns flat nodes with parentId references — build a tree
-      const pagination = dom.pagination;
-
-      function summariseNode(node, depth = 0) {
-        const indent = '  '.repeat(depth);
-        const tag = node.type || node.tag || '?';
-        // classes may be IDs or names depending on API version
-        const cls = node.classes && node.classes.length
-          ? '.' + node.classes.join('.')
-          : '';
-        const textVal = node.text || (node.data && node.data.text) || '';
-        const text = textVal ? ` "${String(textVal).slice(0, 60)}${String(textVal).length > 60 ? '…' : ''}"` : '';
-        const label = `${indent}${tag}${cls}${text}`;
-        const children = (node.children || []).map((c) => summariseNode(c, depth + 1));
-        return [label, ...children].join('\n');
-      }
-
-      const nodeMap = {};
-      for (const n of nodes) nodeMap[n.id] = { ...n, children: [] };
-      const roots = [];
-      for (const n of nodes) {
-        if (n.parentId && nodeMap[n.parentId]) {
-          nodeMap[n.parentId].children.push(nodeMap[n.id]);
-        } else {
-          roots.push(nodeMap[n.id]);
-        }
-      }
-
-      const tree = roots.map((r) => summariseNode(r)).join('\n');
-      const paginationNote = pagination && pagination.total > nodes.length
-        ? `\n\n(Showing ${nodes.length} of ${pagination.total} nodes — page is truncated)`
+      const pageLabel = snapshot.pageInfo?.name
+        ? `Page: ${snapshot.pageInfo.name}\n\n`
         : '';
-
-      return ok(`Page DOM (${nodes.length} nodes):\n\n${tree}${paginationNote}`);
+      return ok(`${pageLabel}${snapshot.summary}`);
     }
   );
 
   // ── list_styles ───────────────────────────────────────────────────
   server.tool(
     'list_styles',
-    'List all CSS class names used on a specific Webflow page. Use this before generating a BuildPlan to see ' +
-    'which class names already exist — reference existing styles in your BuildPlan rather than ' +
-    'recreating them, and avoid name collisions. Requires a pageId (get one from list_pages).',
+    'List all CSS class names defined on the Webflow site as seen by the Designer Extension. ' +
+    'Use this before generating a BuildPlan to see what styles already exist — reference them ' +
+    'rather than recreating, and avoid name collisions. The extension must be open for this to work.',
     {
-      siteId:  z.string().describe('The Webflow site ID'),
-      pageId:  z.string().describe('The page ID (from list_pages)'),
+      siteId: z.string().describe('The Webflow site ID'),
     },
-    async ({ siteId, pageId }) => {
-      let client;
-      try {
-        client = registry.getClient(siteId);
-      } catch (e) {
-        return fail(e.message);
-      }
+    async ({ siteId }) => {
+      const { snapshot, error } = await requestSnapshot(siteId);
+      if (error) return fail(error);
 
-      let result;
-      try {
-        result = await client.listStylesFromDom(pageId);
-      } catch (e) {
-        return fail(`Failed to list styles: ${e.message}`);
-      }
+      // Extract just the styles section from the snapshot summary
+      const parts = snapshot.summary.split('── Site styles ──────────────────────');
+      const classLine = parts[1] ? parts[1].trim() : '';
+      const classes = classLine
+        ? classLine.split(',').map((c) => c.trim()).filter(Boolean)
+        : [];
 
       return ok({
-        count: result.classes.length,
-        nodeCount: result.nodeCount,
-        classes: result.classes,
+        count: classes.length,
+        classes,
+        note: 'From Designer Extension snapshot — reflects all styles in the site.',
       });
     }
   );

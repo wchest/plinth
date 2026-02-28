@@ -43,6 +43,11 @@ class SiteRegistry {
       throw new Error(`Failed to parse ${this.configPath}: ${err.message}`);
     }
 
+    // Optional top-level relayUrl (defaults to localhost:3847)
+    this.relayUrl = (!Array.isArray(raw) && raw.relayUrl)
+      ? raw.relayUrl.replace(/\/$/, '')
+      : 'http://localhost:3847';
+
     // Normalise to array
     const entries = Array.isArray(raw) ? raw : [raw];
 

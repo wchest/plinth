@@ -1,5 +1,6 @@
 import { executeBuildPlan, BuildResult } from '../builder/executor';
 import { getQueueItems, getQueueItem, setItemStatus, QueueItem } from './status';
+import { checkAndSendSnapshot } from './snapshot';
 
 export interface PollerConfig {
   siteId: string;
@@ -41,6 +42,9 @@ export class BuildQueuePoller {
 
   async processNext(): Promise<void> {
     const { siteId, relayUrl } = this.config;
+
+    // Check for pending DOM snapshot requests (for get_page_dom / list_styles MCP tools)
+    await checkAndSendSnapshot(siteId, relayUrl);
 
     let items: QueueItem[];
     try {

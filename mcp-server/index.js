@@ -20,9 +20,10 @@ const ok   = (s) => `  ${c.green}✓${c.reset}  ${s}`;
 const fail = (s) => `  ${c.red}✗${c.reset}  ${s}`;
 
 const SiteRegistry = require('./lib/site-registry');
-const queueRouter = require('./routes/queue');
-const statusRouter = require('./routes/status');
-const healthRouter = require('./routes/health');
+const queueRouter    = require('./routes/queue');
+const statusRouter   = require('./routes/status');
+const healthRouter   = require('./routes/health');
+const snapshotRouter = require('./routes/snapshot');
 
 // --- Config path resolution -------------------------------------------
 //
@@ -70,9 +71,10 @@ app.locals.siteRegistry = registry;
 
 // --- Routes -----------------------------------------------------------
 
-app.use('/queue', queueRouter);
-app.use('/status', statusRouter);
-app.use('/health', healthRouter);
+app.use('/queue',    queueRouter);
+app.use('/status',   statusRouter);
+app.use('/health',   healthRouter);
+app.use('/snapshot', snapshotRouter);
 
 // --- 404 handler ------------------------------------------------------
 
