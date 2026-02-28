@@ -6,6 +6,19 @@ const path = require('path');
 const express = require('express');
 const cors = require('cors');
 
+const { version } = require('../package.json');
+
+const c = {
+  reset:  '\x1b[0m',
+  bold:   '\x1b[1m',
+  dim:    '\x1b[2m',
+  green:  '\x1b[32m',
+  red:    '\x1b[31m',
+  cyan:   '\x1b[36m',
+};
+const ok   = (s) => `  ${c.green}✓${c.reset}  ${s}`;
+const fail = (s) => `  ${c.red}✗${c.reset}  ${s}`;
+
 const SiteRegistry = require('./lib/site-registry');
 const queueRouter = require('./routes/queue');
 const statusRouter = require('./routes/status');
@@ -50,7 +63,7 @@ let registry;
 try {
   registry = new SiteRegistry(configPath);
 } catch (err) {
-  console.error('[plinth] ERROR:', err.message);
+  console.error(fail(err.message));
   process.exit(1);
 }
 app.locals.siteRegistry = registry;
@@ -72,24 +85,44 @@ app.use((req, res) => {
 // eslint-disable-next-line no-unused-vars
 app.use((err, req, res, next) => {
   const status = err.status || 500;
-  console.error('[plinth] Unhandled error:', err.message);
   res.status(status).json({ error: err.message || 'Internal server error' });
 });
 
 // --- Startup ----------------------------------------------------------
 
 async function start() {
+  const sites = registry.summary();
+  const siteLabel = sites.map((s) => s.name).join(', ');
+
+  console.log('');
+  console.log(`  ${c.bold}plinth${c.reset} v${version}  ${c.dim}${siteLabel}${c.reset}`);
+  console.log('');
+
   await new Promise((resolve) => {
     app.listen(PORT, '127.0.0.1', () => {
-      console.log(`[plinth] MCP relay server listening at http://127.0.0.1:${PORT}`);
-      console.log(`[plinth] Config: ${configPath}`);
+      console.log(ok(`Relay listening on http://localhost:${PORT}`));
       resolve();
     });
   });
 
-  // Discover _Build Queue collection for all configured sites
-  await registry.discoverAll();
-  console.log('[plinth] Ready.');
+  // Discover _Build Queue collections
+  const results = await registry.discoverAll();
+  for (const r of results) {
+    if (r.ok) {
+      console.log(ok(`${r.name} — queue ready`));
+    } else {
+      console.log(fail(`${r.name} — ${r.error}`));
+    }
+  }
+
+  const allReady = results.every((r) => r.ok);
+  console.log('');
+  if (allReady) {
+    console.log(`  Waiting for BuildPlans…  ${c.dim}Press Ctrl+C to quit${c.reset}`);
+  } else {
+    console.log(`  ${c.red}Some sites failed to connect. Check your .plinth.json.${c.reset}`);
+  }
+  console.log('');
 }
 
 start().catch((err) => {

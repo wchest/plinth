@@ -324,8 +324,10 @@ async function main() {
   console.log(`  ${dim('clear_queue')}       — remove done/error items`);
   console.log(`  ${dim('health_check')}      — verify Webflow connectivity`);
   console.log('');
-  console.log(`Next: open the Webflow Designer, install the Plinth extension,`);
-  console.log(`and enter your API token in the extension UI.\n`);
+  console.log(`Next steps:`);
+  console.log(`  1. Run ${c.cyan}plinth dev${c.reset} to start the relay on localhost:3847`);
+  console.log(`  2. Open the Webflow Designer and install the Plinth extension`);
+  console.log(`  3. Enter ${c.cyan}http://localhost:3847${c.reset} as the relay URL in the extension\n`);
 }
 
 main().catch((e) => {

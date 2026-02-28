@@ -19,7 +19,7 @@ ${c.bold}Usage:${c.reset}
 ${c.bold}Commands:${c.reset}
   ${c.cyan}init${c.reset}          Bootstrap a new project (creates .plinth.json, _Build Queue, registers MCP)
   ${c.cyan}mcp${c.reset}           Start the MCP stdio server ${c.dim}(used by Claude Code)${c.reset}
-  ${c.cyan}server${c.reset}        Start the HTTP relay server on localhost:3847
+  ${c.cyan}dev${c.reset}           Start the relay server on localhost:3847
   ${c.cyan}health${c.reset}        Check Webflow connectivity for configured sites
   ${c.cyan}queue list${c.reset}    Show all items in the build queue
   ${c.cyan}queue clear${c.reset}   Remove completed (done/error) items from the queue
@@ -53,7 +53,8 @@ switch (command) {
     require('../mcp-server/mcp.js');
     break;
 
-  case 'server':
+  case 'dev':
+  case 'server': // alias
     process.argv.splice(2, 1);
     require('../mcp-server/index.js');
     break;

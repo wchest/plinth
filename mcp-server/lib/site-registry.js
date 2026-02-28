@@ -55,10 +55,7 @@ class SiteRegistry {
       this.siteNames.set(siteId, name || siteId);
     }
 
-    console.log(
-      `[plinth] Loaded ${this.clients.size} site(s) from ${path.basename(this.configPath)}:`,
-      [...this.siteNames.values()].join(', ')
-    );
+    // Startup summary is printed by the caller (index.js)
   }
 
   // Returns the WebflowClient for a given siteId. Throws 404 if not configured.
@@ -84,10 +81,8 @@ class SiteRegistry {
       const name = this.siteNames.get(siteId);
       try {
         const collectionId = await client.discoverQueueCollection();
-        console.log(`[plinth] ${name}: queue collection ${collectionId}`);
         results.push({ siteId, name, collectionId, ok: true });
       } catch (err) {
-        console.warn(`[plinth] ${name}: ${err.message}`);
         results.push({ siteId, name, ok: false, error: err.message });
       }
     }

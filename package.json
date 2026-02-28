@@ -6,9 +6,13 @@
     "plinth": "bin/plinth.js"
   },
   "scripts": {
+    "dev": "concurrently --names \"relay,ext\" --prefix-colors \"cyan,magenta\" \"npm run dev:relay\" \"npm run dev:extension\"",
     "dev:extension": "cd extension && npm run dev",
-    "dev:server": "cd mcp-server && npm start",
+    "dev:relay": "PLINTH_CONFIG=$(pwd)/.plinth.json node mcp-server/index.js",
     "validate": "node -e \"const s = require('./skill/schemas/buildplan.schema.json'); console.log('Schema OK:', s.title)\""
+  },
+  "devDependencies": {
+    "concurrently": "^8.2.2"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.0.0",
