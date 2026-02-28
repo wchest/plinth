@@ -23,10 +23,11 @@ When the MCP server is registered, these tools are available:
 - `clear_queue(siteId)` — remove done/error items
 - `health_check()` — verify Webflow connectivity for all configured sites
 - `list_pages(siteId)` — list all pages with id, title, slug (use to get pageId)
-- `get_page_dom(siteId, pageId)` — get the full element tree for a page (use before building to avoid duplicates)
-- `list_styles(siteId, pageId)` — list all CSS class names used on a page (use before building to avoid name collisions)
+- `get_page_dom(siteId, pageId)` — get all text/content nodes with class names via Data API (always works, no extension needed)
+- `list_styles(siteId, pageId)` — list all CSS class names used on a page via Data API
+- `get_page_snapshot(siteId)` — get the full structural DOM (sections, containers, all elements) via the Designer Extension (requires extension open + connected)
 
-**Note**: `get_page_dom` and `list_styles` reflect the *saved/published* state of a page, not unsaved Designer changes.
+**Note**: `get_page_dom` and `list_styles` use the Webflow Data API and reflect saved content nodes only (no structural elements). `get_page_snapshot` uses the Designer Extension and sees the full live DOM including layout structure.
 
 ## BuildPlan Rules
 - All CSS must be longhand (padding-top, not padding)

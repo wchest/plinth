@@ -408,6 +408,25 @@ async function main() {
     }
   );
 
+  // ── get_page_snapshot ─────────────────────────────────────────────
+  server.tool(
+    'get_page_snapshot',
+    'Get the full structural DOM of the current page via the Designer Extension — sections, ' +
+    'containers, divs, headings, all element types with their class names and text. More complete ' +
+    'than get_page_dom (which only returns content/text nodes). Requires the Designer Extension ' +
+    'to be open and connected to the relay. Use this to see exactly what sections exist before ' +
+    'queuing a BuildPlan.',
+    {
+      siteId: z.string().describe('The Webflow site ID'),
+    },
+    async ({ siteId }) => {
+      const { snapshot, error } = await requestSnapshot(siteId);
+      if (error) return fail(error);
+      const pageLabel = snapshot.pageInfo?.name ? `Page: ${snapshot.pageInfo.name}\n\n` : '';
+      return ok(`${pageLabel}${snapshot.summary}`);
+    }
+  );
+
   // --- Connect stdio transport --------------------------------------
 
   const transport = new StdioServerTransport();
