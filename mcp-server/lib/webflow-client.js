@@ -162,6 +162,27 @@ class WebflowClient {
     );
   }
 
+  async listPages() {
+    const data = await this._request('GET', `/sites/${this.siteId}/pages`);
+    return (data && data.pages) ? data.pages : [];
+  }
+
+  async getPageDom(pageId) {
+    const data = await this._request('GET', `/pages/${pageId}/dom`);
+    return data;
+  }
+
+  async listStylesFromDom(pageId) {
+    // Webflow has no REST endpoint for styles — extract class names from page DOM nodes instead
+    const data = await this._request('GET', `/pages/${pageId}/dom`);
+    const nodes = (data && data.nodes) ? data.nodes : [];
+    const classes = new Set();
+    for (const node of nodes) {
+      for (const cls of (node.classes || [])) classes.add(cls);
+    }
+    return { classes: [...classes].sort(), nodeCount: nodes.length };
+  }
+
   async healthCheck() {
     try {
       const data = await this._request('GET', `/sites/${this.siteId}`);

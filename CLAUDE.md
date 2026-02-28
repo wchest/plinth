@@ -22,6 +22,11 @@ When the MCP server is registered, these tools are available:
 - `get_queue_status(siteId)` — list all queue items and their status
 - `clear_queue(siteId)` — remove done/error items
 - `health_check()` — verify Webflow connectivity for all configured sites
+- `list_pages(siteId)` — list all pages with id, title, slug (use to get pageId)
+- `get_page_dom(siteId, pageId)` — get the full element tree for a page (use before building to avoid duplicates)
+- `list_styles(siteId, pageId)` — list all CSS class names used on a page (use before building to avoid name collisions)
+
+**Note**: `get_page_dom` and `list_styles` reflect the *saved/published* state of a page, not unsaved Designer changes.
 
 ## BuildPlan Rules
 - All CSS must be longhand (padding-top, not padding)

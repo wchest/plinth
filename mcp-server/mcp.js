@@ -212,6 +212,153 @@ async function main() {
     }
   );
 
+  // ── list_pages ────────────────────────────────────────────────────
+  server.tool(
+    'list_pages',
+    'List all pages on a Webflow site with their IDs, titles, and slugs. ' +
+    'Use this before building to identify which page to target and get the pageId needed for get_page_dom.',
+    {
+      siteId: z.string().describe('The Webflow site ID'),
+    },
+    async ({ siteId }) => {
+      let client;
+      try {
+        client = registry.getClient(siteId);
+      } catch (e) {
+        return fail(e.message);
+      }
+
+      let pages;
+      try {
+        pages = await client.listPages();
+      } catch (e) {
+        return fail(`Failed to list pages: ${e.message}`);
+      }
+
+      const summary = pages
+        .filter((p) => !p.collectionId) // exclude CMS templates
+        .map((p) => ({
+          id: p.id,
+          title: p.title,
+          slug: p.slug || '(home)',
+          lastUpdated: p.lastUpdated,
+        }));
+
+      return ok(summary);
+    }
+  );
+
+  // ── get_page_dom ──────────────────────────────────────────────────
+  server.tool(
+    'get_page_dom',
+    'Get the full element tree of a Webflow page. Returns a structured summary showing all ' +
+    'sections, containers, and elements with their types and class names. Use this to understand ' +
+    'what already exists on a page before queuing a BuildPlan — prevents building duplicate sections.',
+    {
+      siteId:  z.string().describe('The Webflow site ID'),
+      pageId:  z.string().describe('The page ID (from list_pages)'),
+    },
+    async ({ siteId, pageId }) => {
+      let client;
+      try {
+        client = registry.getClient(siteId);
+      } catch (e) {
+        return fail(e.message);
+      }
+
+      let dom;
+      try {
+        dom = await client.getPageDom(pageId);
+      } catch (e) {
+        return fail(`Failed to get page DOM: ${e.message}`);
+      }
+
+      // Debug: show top-level keys when nodes are missing
+      const nodes = dom.nodes || [];
+      if (nodes.length === 0) {
+        const keys = Object.keys(dom || {});
+        const firstNode = dom.nodes !== undefined ? '(nodes key exists but empty)' : '(no nodes key)';
+        return ok(
+          `Page DOM returned 0 nodes.\n` +
+          `Response keys: ${keys.join(', ')}\n` +
+          `Notes key: ${firstNode}\n` +
+          `Raw sample: ${JSON.stringify(dom).slice(0, 500)}\n\n` +
+          `NOTE: The Webflow Data API reflects the *saved* state of a page, not live Designer changes. ` +
+          `If you built content via the Designer Extension but haven't saved/published, the DOM API ` +
+          `will show an empty or older version.`
+        );
+      }
+
+      // Webflow DOM API returns flat nodes with parentId references — build a tree
+      const pagination = dom.pagination;
+
+      function summariseNode(node, depth = 0) {
+        const indent = '  '.repeat(depth);
+        const tag = node.type || node.tag || '?';
+        // classes may be IDs or names depending on API version
+        const cls = node.classes && node.classes.length
+          ? '.' + node.classes.join('.')
+          : '';
+        const textVal = node.text || (node.data && node.data.text) || '';
+        const text = textVal ? ` "${String(textVal).slice(0, 60)}${String(textVal).length > 60 ? '…' : ''}"` : '';
+        const label = `${indent}${tag}${cls}${text}`;
+        const children = (node.children || []).map((c) => summariseNode(c, depth + 1));
+        return [label, ...children].join('\n');
+      }
+
+      const nodeMap = {};
+      for (const n of nodes) nodeMap[n.id] = { ...n, children: [] };
+      const roots = [];
+      for (const n of nodes) {
+        if (n.parentId && nodeMap[n.parentId]) {
+          nodeMap[n.parentId].children.push(nodeMap[n.id]);
+        } else {
+          roots.push(nodeMap[n.id]);
+        }
+      }
+
+      const tree = roots.map((r) => summariseNode(r)).join('\n');
+      const paginationNote = pagination && pagination.total > nodes.length
+        ? `\n\n(Showing ${nodes.length} of ${pagination.total} nodes — page is truncated)`
+        : '';
+
+      return ok(`Page DOM (${nodes.length} nodes):\n\n${tree}${paginationNote}`);
+    }
+  );
+
+  // ── list_styles ───────────────────────────────────────────────────
+  server.tool(
+    'list_styles',
+    'List all CSS class names used on a specific Webflow page. Use this before generating a BuildPlan to see ' +
+    'which class names already exist — reference existing styles in your BuildPlan rather than ' +
+    'recreating them, and avoid name collisions. Requires a pageId (get one from list_pages).',
+    {
+      siteId:  z.string().describe('The Webflow site ID'),
+      pageId:  z.string().describe('The page ID (from list_pages)'),
+    },
+    async ({ siteId, pageId }) => {
+      let client;
+      try {
+        client = registry.getClient(siteId);
+      } catch (e) {
+        return fail(e.message);
+      }
+
+      let result;
+      try {
+        result = await client.listStylesFromDom(pageId);
+      } catch (e) {
+        return fail(`Failed to list styles: ${e.message}`);
+      }
+
+      return ok({
+        count: result.classes.length,
+        nodeCount: result.nodeCount,
+        classes: result.classes,
+      });
+    }
+  );
+
   // --- Connect stdio transport --------------------------------------
 
   const transport = new StdioServerTransport();
