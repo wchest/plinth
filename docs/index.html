@@ -694,6 +694,48 @@
     }
 
     /* ─────────────────────────────────────────
+       CLAUDE.AI SECTION
+    ───────────────────────────────────────── */
+    .claudeai-section {
+      padding: 80px 0;
+      border-top: 1px solid var(--border);
+    }
+
+    .claudeai-intro {
+      font-size: 16px;
+      color: var(--text-2);
+      line-height: 1.7;
+      max-width: 600px;
+      margin-bottom: 56px;
+    }
+
+    .claudeai-steps {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 20px;
+      margin-bottom: 32px;
+    }
+
+    .claudeai-note {
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 20px 24px;
+      background: rgba(139, 92, 246, 0.05);
+      font-size: 14px;
+      color: var(--text-2);
+      display: flex;
+      align-items: flex-start;
+      gap: 12px;
+      line-height: 1.6;
+    }
+
+    .claudeai-note-icon {
+      font-size: 16px;
+      flex-shrink: 0;
+      margin-top: 1px;
+    }
+
+    /* ─────────────────────────────────────────
        ANIMATIONS
     ───────────────────────────────────────── */
     @keyframes fadeUp {
@@ -725,6 +767,7 @@
       .steps { grid-template-columns: 1fr; }
       .step-arrow { display: none; }
       .qs-grid { grid-template-columns: 1fr; }
+      .claudeai-steps { grid-template-columns: 1fr; }
       .footer-inner { flex-direction: column; align-items: flex-start; }
     }
   </style>
@@ -908,6 +951,40 @@
           <p>Run the extension dev server, then register it in Webflow Dashboard → Workspace Settings → Apps &amp; Integrations → Develop. Open your site in Designer and start building.</p>
         </div>
 
+      </div>
+    </div>
+  </section>
+
+  <!-- ── CLAUDE.AI SECTION ── -->
+  <section class="claudeai-section" id="claude-ai">
+    <div class="container">
+      <p class="section-label reveal">No CLI required</p>
+      <h2 class="section-title reveal reveal-delay-1">Works with claude.ai too.</h2>
+      <p class="claudeai-intro reveal reveal-delay-2">No MCP server, no terminal. Upload the skill file to a claude.ai Project and generate BuildPlans directly in chat — then paste them into the Designer Extension.</p>
+      <div class="claudeai-steps">
+
+        <div class="qs-step">
+          <p class="qs-step-num">STEP 01</p>
+          <p class="qs-step-title">Create a Project</p>
+          <p>In claude.ai, create a new Project. Upload <code style="font-family:var(--mono);font-size:12px;color:var(--accent-hi)">skill/SKILL.md</code> as a knowledge file — this gives Claude the BuildPlan format and your design system rules.</p>
+        </div>
+
+        <div class="qs-step">
+          <p class="qs-step-num">STEP 02</p>
+          <p class="qs-step-title">Generate a BuildPlan</p>
+          <p>Describe the section you want — <em style="color:var(--text-3)">"a 3-column features grid, dark background, eyebrow label above the headline."</em> Claude returns a valid BuildPlan JSON block.</p>
+        </div>
+
+        <div class="qs-step">
+          <p class="qs-step-num">STEP 03</p>
+          <p class="qs-step-title">Paste into the Extension</p>
+          <p>Copy the JSON and paste it into the Plinth Designer Extension's manual input area in Webflow. Hit <strong style="color:var(--text)">Build</strong> — the section materialises on the canvas.</p>
+        </div>
+
+      </div>
+      <div class="claudeai-note">
+        <span class="claudeai-note-icon">⚡</span>
+        <span><strong style="color:var(--text)">Want full automation?</strong> Use <a href="#quickstart" style="color:var(--accent-hi);text-decoration:none;border-bottom:1px solid rgba(167,139,250,0.3)">Claude Code with MCP</a> instead — Claude generates BuildPlans and queues them automatically with no copy-paste.</span>
       </div>
     </div>
   </section>
