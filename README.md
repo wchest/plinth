@@ -14,38 +14,49 @@ Direct MCP-to-Designer connections are fragile (tab-focus-dependent, timeout-pro
 | Skill Instructions | `skill/SKILL.md` | Claude's rules for generating BuildPlans |
 | Example Plans | `skill/examples/` | Reference BuildPlan JSONs |
 | Designer Extension | `extension/` | React app that reads queue + builds elements |
-| MCP Relay Server | `mcp-server/` | HTTP relay on localhost:3847 for Claude Code |
+| MCP Relay | `mcp-server/` | Local relay on `localhost:3847` for Claude Code |
 
 ## Quick Start
 
 ```bash
-# Start the MCP relay
-cd mcp-server && cp .env.example .env  # add your site-level WEBFLOW_API_TOKEN
-npm install && npm start
+# 1. Install globally (once)
+npm install -g plinth
 
-# Start the extension dev server (separate terminal)
-cd extension && npm install && npm run dev
+# 2. Set up a project
+cd my-webflow-project
+plinth init          # prompts for site ID + API token, creates .plinth.json,
+                     # sets up _Build Queue CMS collection, registers MCP
+
+# 3. Start the relay (leave running)
+plinth dev
+
+# 4. Open Claude Code in the same folder (separate terminal)
+claude
 ```
 
-### Designer Extension setup (one-time)
+The Plinth MCP tools (`queue_buildplan`, `get_queue_status`, etc.) are available automatically in Claude Code because `plinth init` registers them project-scoped via `.mcp.json`.
+
+### Designer Extension setup (one-time per Webflow workspace)
 
 1. **Create an app** in Webflow Dashboard → Workspace Settings → Apps & Integrations → Develop → New App
    Enable: **Designer Extension** + **Data client** (CMS read/write, Pages, Assets, Publish)
 
-2. **Authenticate the Webflow CLI** when prompted on first `npm run dev`
-   Get a **workspace-level** token from Account Settings → Integrations → API Access
-   _(This is separate from the site-level token used by the MCP relay)_
+2. **Authenticate the Webflow CLI** when prompted on first run:
+   ```bash
+   cd extension && npm run dev
+   ```
+   Get a **workspace-level** token from Account Settings → Integrations → API Access.
+   _(Separate from the site-level token used by the relay)_
 
 3. **Open your site** in Webflow Designer → Apps panel → **Plinth Builder**
-   The extension loads automatically from `localhost:1337` while the dev server is running
+   Enter `http://localhost:3847` as the relay URL → Connect.
+   The extension connects to the running `plinth dev` relay — no API token needed.
 
-### Production deployment
-
-To run the extension without a local dev server:
+### Production deployment (extension without local dev server)
 
 ```bash
 cd extension && npm run build
-# Runs webpack + `webflow extension bundle`, producing a .zip
+# Produces a .zip via `webflow extension bundle`
 # Upload via Webflow Dashboard → your app → Hosting
 ```
 

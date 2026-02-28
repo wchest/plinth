@@ -925,30 +925,30 @@
 
         <div class="qs-step">
           <p class="qs-step-num">STEP 01</p>
-          <p class="qs-step-title">Install the CLI</p>
+          <p class="qs-step-title">Install globally</p>
           <code class="cmd">npm install -g plinth</code>
-          <p>Installs the <code style="font-family:var(--mono);font-size:12px;color:var(--accent-hi)">plinth</code> command globally. Requires Node 18+.</p>
+          <p>One-time install. Puts the <code style="font-family:var(--mono);font-size:12px;color:var(--accent-hi)">plinth</code> command on your PATH. Requires Node 18+.</p>
         </div>
 
         <div class="qs-step">
           <p class="qs-step-num">STEP 02</p>
-          <p class="qs-step-title">Initialise your project</p>
+          <p class="qs-step-title">Init your project</p>
           <code class="cmd">cd my-webflow-project<br>plinth init</code>
-          <p>Prompts for your Webflow API token, discovers your site, creates the <code style="font-family:var(--mono);font-size:12px;color:var(--accent-hi)">_Build Queue</code> CMS collection, and registers the MCP server with Claude Code.</p>
+          <p>Prompts for your site ID and API token. Creates <code style="font-family:var(--mono);font-size:12px;color:var(--accent-hi)">.plinth.json</code>, sets up the <code style="font-family:var(--mono);font-size:12px;color:var(--accent-hi)">_Build Queue</code> CMS collection, and registers the MCP tools with Claude Code.</p>
         </div>
 
         <div class="qs-step">
           <p class="qs-step-num">STEP 03</p>
-          <p class="qs-step-title">Start the relay server</p>
-          <code class="cmd">plinth server</code>
-          <p>Starts the HTTP relay on <code style="font-family:var(--mono);font-size:12px;color:var(--accent-hi)">localhost:3847</code>. Claude Code's MCP tools route through here to your Webflow site.</p>
+          <p class="qs-step-title">Start the relay</p>
+          <code class="cmd">plinth dev</code>
+          <p>Starts the local relay on <code style="font-family:var(--mono);font-size:12px;color:var(--accent-hi)">localhost:3847</code>. Leave it running. In a second terminal, open <code style="font-family:var(--mono);font-size:12px;color:var(--accent-hi)">claude</code> from the same folder — MCP tools are available automatically.</p>
         </div>
 
         <div class="qs-step">
           <p class="qs-step-num">STEP 04</p>
-          <p class="qs-step-title">Set up the Designer Extension</p>
-          <code class="cmd">cd extension && npm run dev</code>
-          <p><strong style="color:var(--text)">One-time setup:</strong> create an app in Webflow Dashboard → Workspace Settings → Apps &amp; Integrations → Develop. Enable Designer Extension + Data client. Authenticate the Webflow CLI with a <strong style="color:var(--text)">workspace-level</strong> token from Account Settings → Integrations → API Access (not the site token). Then open your site in Designer → Apps panel → <strong style="color:var(--text)">Plinth Builder</strong> — it loads from <code style="font-family:var(--mono);font-size:12px;color:var(--accent-hi)">localhost:1337</code> automatically.</p>
+          <p class="qs-step-title">Connect the Designer Extension</p>
+          <code class="cmd">Designer → Apps → Plinth Builder</code>
+          <p><strong style="color:var(--text)">One-time:</strong> install the Plinth app in Webflow Dashboard → Apps &amp; Integrations → Develop. Then open your site in the Designer, find Plinth Builder in the Apps panel, and enter <code style="font-family:var(--mono);font-size:12px;color:var(--accent-hi)">http://localhost:3847</code> as the relay URL.</p>
         </div>
 
       </div>
