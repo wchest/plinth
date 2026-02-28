@@ -4,6 +4,7 @@ import { QueueItem } from './queue/status';
 import { discoverConfig, DiscoveredConfig } from './queue/discovery';
 import { executeBuildPlan } from './builder/executor';
 import { checkAndSendSnapshot } from './queue/snapshot';
+import { BUILD_TIME } from './version';
 
 export type { BuildResult } from './builder/executor';
 
@@ -385,7 +386,11 @@ export default function App() {
 
       {/* Footer */}
       <div style={{ marginTop: '8px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-        <span style={{ fontSize: '10px', color: '#ccc' }}>{storedConfig?.relayUrl}</span>
+        <span style={{ fontSize: '10px', color: '#ccc' }}>
+          {storedConfig?.relayUrl}
+          {' · built '}
+          {BUILD_TIME ? new Date(BUILD_TIME).toLocaleTimeString() : 'dev'}
+        </span>
         <button style={s.resetLink} onClick={handleReset}>Change relay URL</button>
       </div>
     </div>

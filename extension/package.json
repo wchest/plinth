@@ -3,8 +3,8 @@
   "version": "1.0.0",
   "private": true,
   "scripts": {
-    "dev": "concurrently \"npx webflow extension serve\" \"npm run watch-webpack\"",
-    "build": "npm run build-webpack && npx webflow extension bundle",
+    "dev": "node scripts/stamp.js && concurrently \"npx webflow extension serve\" \"npm run watch-webpack\"",
+    "build": "node scripts/stamp.js && npm run build-webpack && npx webflow extension bundle",
     "watch-webpack": "webpack --config webpack.config.mjs --mode development --watch",
     "build-webpack": "webpack --config webpack.config.mjs --mode production",
     "lint": "eslint . --ext .ts,.tsx"
