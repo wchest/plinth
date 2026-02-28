@@ -59,10 +59,40 @@ router.get('/:itemId', async (req, res) => {
     return res.status(err.status === 404 ? 404 : 500).json({ error: err.message });
   }
 
-  const response = { id: item.id, name: item.name, status: item.status, order: item.order };
+  const response = { id: item.id, name: item.name, status: item.status, order: item.order, plan: item.plan };
   if (item.errorMessage) response.errorMessage = item.errorMessage;
 
   return res.json(response);
+});
+
+// PATCH /status/:itemId?siteId=...
+// Updates a queue item's status. Called by the Designer Extension.
+router.patch('/:itemId', async (req, res) => {
+  const { itemId } = req.params;
+  const { siteId } = req.query;
+  const { status, errorMessage } = req.body;
+
+  if (!siteId) {
+    return res.status(400).json({ error: 'siteId query parameter is required' });
+  }
+  if (!status) {
+    return res.status(400).json({ error: 'status is required in body' });
+  }
+
+  let client;
+  try {
+    client = req.app.locals.siteRegistry.getClient(siteId);
+  } catch (err) {
+    return res.status(err.status || 404).json({ error: err.message });
+  }
+
+  try {
+    await client.updateItemStatus(itemId, status, errorMessage);
+  } catch (err) {
+    return res.status(err.status === 404 ? 404 : 500).json({ error: err.message });
+  }
+
+  return res.json({ id: itemId, status });
 });
 
 module.exports = router;

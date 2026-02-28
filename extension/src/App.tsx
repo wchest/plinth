@@ -7,10 +7,12 @@ import { executeBuildPlan } from './builder/executor';
 export type { BuildResult } from './builder/executor';
 
 // ─── Config (persisted) ───────────────────────────────────────────────────────
-// Only the API token is stored — siteId and collectionId are auto-discovered.
+// Only the relay URL is stored — siteId is auto-discovered from the Designer.
+
+const DEFAULT_RELAY_URL = 'http://localhost:3847';
 
 interface StoredConfig {
-  apiToken: string;
+  relayUrl: string;
 }
 
 const CONFIG_KEY = 'plinth-config';
@@ -20,7 +22,7 @@ function loadStoredConfig(): StoredConfig | null {
     const raw = localStorage.getItem(CONFIG_KEY);
     if (!raw) return null;
     const parsed = JSON.parse(raw) as Partial<StoredConfig>;
-    if (parsed.apiToken) return parsed as StoredConfig;
+    if (parsed.relayUrl) return parsed as StoredConfig;
     return null;
   } catch {
     return null;
@@ -102,30 +104,31 @@ const s = {
   } as React.CSSProperties,
 };
 
-// ─── Token Form ──────────────────────────────────────────────────────────────
+// ─── Relay URL Form ───────────────────────────────────────────────────────────
 
-function TokenForm({ onSave }: { onSave: (token: string) => void }) {
-  const [token, setToken] = useState('');
+function RelayForm({ onSave }: { onSave: (relayUrl: string) => void }) {
+  const [url, setUrl] = useState(DEFAULT_RELAY_URL);
   return (
     <div style={s.root}>
       <p style={s.heading}>Plinth Builder — Setup</p>
       <div style={s.section}>
-        <label style={s.inputLabel}>Webflow API Token</label>
+        <label style={s.inputLabel}>Relay Server URL</label>
         <input
           style={s.input}
-          type="password"
-          placeholder="Paste your API token"
-          value={token}
-          onChange={(e) => setToken(e.target.value)}
+          type="text"
+          placeholder={DEFAULT_RELAY_URL}
+          value={url}
+          onChange={(e) => setUrl(e.target.value)}
           autoFocus
         />
         <p style={{ ...s.mutedText, marginTop: 0, marginBottom: '12px' }}>
-          Site ID and queue collection are auto-discovered from this site.
+          Run <code style={{ fontFamily: 'monospace' }}>plinth server</code> locally first.
+          Site ID is auto-discovered from this page.
         </p>
         <button
           style={{ ...s.btn, ...s.btnPrimary, width: '100%', justifyContent: 'center' }}
-          onClick={() => { if (token.trim()) onSave(token.trim()); }}
-          disabled={!token.trim()}
+          onClick={() => { if (url.trim()) onSave(url.trim().replace(/\/$/, '')); }}
+          disabled={!url.trim()}
         >
           Connect
         </button>
@@ -179,12 +182,12 @@ export default function App() {
 
   const pollerRef = useRef<BuildQueuePoller | null>(null);
 
-  // Run discovery whenever we have a token
-  const runDiscovery = useCallback(async (token: string) => {
+  // Run discovery whenever we have a relay URL
+  const runDiscovery = useCallback(async (relayUrl: string) => {
     setDiscovering(true);
     setDiscoveryError(null);
     try {
-      const result = await discoverConfig(token);
+      const result = await discoverConfig(relayUrl);
       setDiscovered(result);
     } catch (err) {
       setDiscoveryError(err instanceof Error ? err.message : String(err));
@@ -195,7 +198,7 @@ export default function App() {
 
   useEffect(() => {
     if (storedConfig) {
-      runDiscovery(storedConfig.apiToken);
+      runDiscovery(storedConfig.relayUrl);
     }
   }, [storedConfig, runDiscovery]);
 
@@ -205,8 +208,7 @@ export default function App() {
 
     const poller = new BuildQueuePoller({
       siteId: discovered.siteId,
-      collectionId: discovered.collectionId,
-      apiToken: storedConfig.apiToken,
+      relayUrl: storedConfig.relayUrl,
       onStatusChange: (items) => setQueueItems(items),
       onBuildComplete: (item, result) => {
         setLastBuiltName(item.name);
@@ -227,8 +229,8 @@ export default function App() {
     else if (!isPolling && poller.isRunning()) poller.stop();
   }, [isPolling]);
 
-  const handleSaveToken = useCallback((token: string) => {
-    const config = { apiToken: token };
+  const handleSaveToken = useCallback((relayUrl: string) => {
+    const config = { relayUrl };
     saveStoredConfig(config);
     setStoredConfig(config);
   }, []);
@@ -269,14 +271,14 @@ export default function App() {
 
   // --- Render gates ---
 
-  if (!storedConfig) return <TokenForm onSave={handleSaveToken} />;
+  if (!storedConfig) return <RelayForm onSave={handleSaveToken} />;
 
   if (discovering || (!discovered && !discoveryError)) {
-    return <DiscoveringView error={null} onRetry={() => runDiscovery(storedConfig.apiToken)} onReset={handleReset} />;
+    return <DiscoveringView error={null} onRetry={() => runDiscovery(storedConfig.relayUrl)} onReset={handleReset} />;
   }
 
   if (discoveryError) {
-    return <DiscoveringView error={discoveryError} onRetry={() => runDiscovery(storedConfig.apiToken)} onReset={handleReset} />;
+    return <DiscoveringView error={discoveryError} onRetry={() => runDiscovery(storedConfig.relayUrl)} onReset={handleReset} />;
   }
 
   // --- Main UI ---
@@ -369,8 +371,8 @@ export default function App() {
 
       {/* Footer */}
       <div style={{ marginTop: '8px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-        <span style={{ fontSize: '10px', color: '#ccc' }}>{discovered?.collectionId}</span>
-        <button style={s.resetLink} onClick={handleReset}>Change token</button>
+        <span style={{ fontSize: '10px', color: '#ccc' }}>{storedConfig?.relayUrl}</span>
+        <button style={s.resetLink} onClick={handleReset}>Change relay URL</button>
       </div>
     </div>
   );

@@ -1,17 +1,14 @@
-const BASE_URL = 'https://api.webflow.com/v2';
-
 export interface DiscoveredConfig {
   siteId: string;
-  collectionId: string;
   siteName?: string;
 }
 
 /**
- * Auto-detect the current site ID from the Designer API, then query the
- * Webflow Data API to find the _Build Queue collection by name.
+ * Auto-detect the current site ID from the Designer API, then verify
+ * the relay server is reachable and has the site configured.
  */
-export async function discoverConfig(apiToken: string): Promise<DiscoveredConfig> {
-  // 1. Get site ID from the Designer context — no manual input needed
+export async function discoverConfig(relayUrl: string): Promise<DiscoveredConfig> {
+  // 1. Get site ID from the Designer context
   const siteInfo = await webflow.getSiteInfo();
   const siteId = siteInfo.siteId;
 
@@ -19,42 +16,33 @@ export async function discoverConfig(apiToken: string): Promise<DiscoveredConfig
     throw new Error('Could not determine site ID from Webflow Designer.');
   }
 
-  // 2. List all collections on the site via the Data API
-  const res = await fetch(`${BASE_URL}/sites/${siteId}/collections`, {
-    headers: {
-      Authorization: `Bearer ${apiToken}`,
-      'accept-version': '1.0.0',
-    },
-  });
-
-  if (!res.ok) {
-    let msg = `Webflow API error ${res.status}`;
-    try {
-      const body = await res.json();
-      msg = body.message || body.msg || msg;
-    } catch (_) { /* ignore */ }
-    throw new Error(msg);
-  }
-
-  const data = await res.json();
-  const collections: Array<{ id: string; displayName: string; slug?: string }> =
-    data.collections ?? [];
-
-  // 3. Find _Build Queue by display name or slug
-  const queue = collections.find(
-    (c) => c.displayName === '_Build Queue' || c.slug === '-build-queue'
-  );
-
-  if (!queue) {
+  // 2. Verify relay is reachable and has this site configured
+  let health: { sites?: Array<{ siteId: string; queueReady: boolean }> };
+  try {
+    const res = await fetch(`${relayUrl}/health`);
+    if (!res.ok) {
+      throw new Error(`Relay returned ${res.status}`);
+    }
+    health = await res.json();
+  } catch (err) {
     throw new Error(
-      '_Build Queue collection not found on this site.\n' +
-      'Create it in the Webflow CMS dashboard first.'
+      `Cannot reach relay at ${relayUrl}. Run "plinth server" and try again.\n${err instanceof Error ? err.message : String(err)}`
     );
   }
 
-  return {
-    siteId,
-    collectionId: queue.id,
-    siteName: siteInfo.siteName ?? undefined,
-  };
+  const site = (health.sites ?? []).find((s) => s.siteId === siteId);
+
+  if (!site) {
+    throw new Error(
+      `Site ${siteId} is not configured in the relay. Add it to your .plinth.json and restart.`
+    );
+  }
+
+  if (!site.queueReady) {
+    throw new Error(
+      '_Build Queue collection not yet discovered. Restart the relay after creating the collection.'
+    );
+  }
+
+  return { siteId, siteName: siteInfo.siteName ?? undefined };
 }

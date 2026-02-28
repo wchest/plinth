@@ -1,10 +1,9 @@
 import { executeBuildPlan, BuildResult } from '../builder/executor';
-import { getQueueItems, setItemStatus, QueueItem } from './status';
+import { getQueueItems, getQueueItem, setItemStatus, QueueItem } from './status';
 
 export interface PollerConfig {
   siteId: string;
-  collectionId: string;
-  apiToken: string;
+  relayUrl: string;
   onStatusChange?: (items: QueueItem[]) => void;
   onBuildStart?: (item: QueueItem) => void;
   onBuildComplete?: (item: QueueItem, result: BuildResult) => void;
@@ -41,11 +40,11 @@ export class BuildQueuePoller {
   }
 
   async processNext(): Promise<void> {
-    const { siteId, collectionId, apiToken } = this.config;
+    const { siteId, relayUrl } = this.config;
 
     let items: QueueItem[];
     try {
-      items = await getQueueItems(siteId, collectionId, apiToken);
+      items = await getQueueItems(siteId, relayUrl);
     } catch (err) {
       this.config.onError?.(err instanceof Error ? err : new Error(String(err)));
       return;
@@ -53,7 +52,6 @@ export class BuildQueuePoller {
 
     this.config.onStatusChange?.(items);
 
-    // Find the first pending item sorted by order
     const pending = items
       .filter((item) => item.status === 'pending')
       .sort((a, b) => a.order - b.order);
@@ -63,21 +61,24 @@ export class BuildQueuePoller {
     const item = pending[0];
 
     try {
-      await setItemStatus(collectionId, item.id, 'building', apiToken);
+      await setItemStatus(siteId, item.id, 'building', relayUrl);
       const updatedItem: QueueItem = { ...item, status: 'building' };
       this.config.onBuildStart?.(updatedItem);
 
-      // Re-fetch items so the UI reflects the building state
+      // Refresh UI to show building state
       try {
-        const refreshed = await getQueueItems(siteId, collectionId, apiToken);
+        const refreshed = await getQueueItems(siteId, relayUrl);
         this.config.onStatusChange?.(refreshed);
       } catch {
-        // Non-fatal — continue with build even if refresh fails
+        // Non-fatal
       }
+
+      // Fetch full item to get plan JSON
+      const fullItem = await getQueueItem(siteId, item.id, relayUrl);
 
       let plan: unknown;
       try {
-        plan = JSON.parse(item.plan);
+        plan = JSON.parse(fullItem.plan);
       } catch {
         throw new Error(`Failed to parse BuildPlan JSON for "${item.name}": invalid JSON`);
       }
@@ -85,25 +86,24 @@ export class BuildQueuePoller {
       const result = await executeBuildPlan(plan);
 
       if (!result.success) {
-        const errorMsg = result.error ?? 'Build failed with no error message';
-        throw new Error(errorMsg);
+        throw new Error(result.error ?? 'Build failed with no error message');
       }
 
-      await setItemStatus(collectionId, item.id, 'done', apiToken);
+      await setItemStatus(siteId, item.id, 'done', relayUrl);
       this.config.onBuildComplete?.({ ...updatedItem, status: 'done' }, result);
     } catch (err) {
       const error = err instanceof Error ? err : new Error(String(err));
       try {
-        await setItemStatus(collectionId, item.id, 'error', apiToken, error.message);
+        await setItemStatus(siteId, item.id, 'error', relayUrl, error.message);
       } catch {
-        // Best-effort — report the original build error regardless
+        // Best-effort
       }
       this.config.onError?.(error);
     }
 
-    // Re-fetch and notify after processing so UI is current
+    // Final refresh
     try {
-      const finalItems = await getQueueItems(siteId, collectionId, apiToken);
+      const finalItems = await getQueueItems(siteId, relayUrl);
       this.config.onStatusChange?.(finalItems);
     } catch {
       // Non-fatal
