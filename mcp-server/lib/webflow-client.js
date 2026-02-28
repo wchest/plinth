@@ -172,6 +172,13 @@ class WebflowClient {
     return data;
   }
 
+  async getPageContent(pageId, { limit = 100, offset = 0 } = {}) {
+    const data = await this._request(
+      'GET', `/pages/${pageId}/dom?limit=${limit}&offset=${offset}`
+    );
+    return data;
+  }
+
   async listStylesFromDom(pageId) {
     // Webflow has no REST endpoint for styles — extract class names from page DOM nodes instead
     const data = await this._request('GET', `/pages/${pageId}/dom`);

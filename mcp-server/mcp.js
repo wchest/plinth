@@ -294,49 +294,117 @@ async function main() {
   // ── get_page_dom ──────────────────────────────────────────────────
   server.tool(
     'get_page_dom',
-    'Capture a live snapshot of the current page as seen in the Webflow Designer. ' +
-    'Triggers the Designer Extension to traverse the element tree and return element types, ' +
-    'class names, and text — use this before queuing a BuildPlan to see what sections already ' +
-    'exist and avoid duplicates. The extension must be open for this to work.',
+    'Get the content and class names on a Webflow page via the Data API. Returns all text ' +
+    'nodes with their CSS class names and text content — use this before queuing a BuildPlan ' +
+    'to see what sections already exist (by h2 text) and what class names are in use.',
     {
       siteId: z.string().describe('The Webflow site ID'),
+      pageId: z.string().describe('The page ID (from list_pages)'),
     },
-    async ({ siteId }) => {
-      const { snapshot, error } = await requestSnapshot(siteId);
-      if (error) return fail(error);
+    async ({ siteId, pageId }) => {
+      let client;
+      try { client = registry.getClient(siteId); } catch (e) { return fail(e.message); }
 
-      const pageLabel = snapshot.pageInfo?.name
-        ? `Page: ${snapshot.pageInfo.name}\n\n`
-        : '';
-      return ok(`${pageLabel}${snapshot.summary}`);
+      // Fetch all pages (paginated) to build a complete picture
+      let allNodes = [];
+      let offset = 0;
+      const limit = 100;
+      try {
+        while (true) {
+          const data = await client.getPageContent(pageId, { limit, offset });
+          const nodes = (data && data.nodes) ? data.nodes : [];
+          allNodes = allNodes.concat(nodes);
+          if (!data.pagination || allNodes.length >= data.pagination.total) break;
+          offset += limit;
+        }
+      } catch (e) {
+        return fail(`Failed to get page content: ${e.message}`);
+      }
+
+      if (allNodes.length === 0) {
+        return ok('Page has no content nodes. It may be empty or unpublished.');
+      }
+
+      // Extract class names from HTML and build a readable summary
+      const classPattern = /class="([^"]+)"/g;
+      const allClasses = new Set();
+      const lines = [];
+
+      for (const node of allNodes) {
+        const html = node.text?.html || '';
+        const text = node.text?.text?.trim().replace(/\s+/g, ' ') || '';
+        if (!text) continue;
+
+        // Extract classes from this node's HTML
+        let match;
+        const nodeClasses = [];
+        classPattern.lastIndex = 0;
+        while ((match = classPattern.exec(html)) !== null) {
+          for (const cls of match[1].split(/\s+/)) {
+            if (cls) { nodeClasses.push(cls); allClasses.add(cls); }
+          }
+        }
+
+        const clsStr = nodeClasses.length ? ' .' + nodeClasses.join('.') : '';
+        const snippet = text.length > 80 ? text.slice(0, 80) + '…' : text;
+        lines.push(`${clsStr || '(no class)'} — "${snippet}"`);
+      }
+
+      const classList = [...allClasses].sort().join(', ');
+      const summary = [
+        `${allNodes.length} content nodes on page:\n`,
+        lines.join('\n'),
+        `\n── Class names in use ──`,
+        classList || '(none)',
+      ].join('\n');
+
+      return ok(summary);
     }
   );
 
   // ── list_styles ───────────────────────────────────────────────────
   server.tool(
     'list_styles',
-    'List all CSS class names defined on the Webflow site as seen by the Designer Extension. ' +
-    'Use this before generating a BuildPlan to see what styles already exist — reference them ' +
-    'rather than recreating, and avoid name collisions. The extension must be open for this to work.',
+    'List all CSS class names used on a Webflow page. Use this before generating a BuildPlan ' +
+    'to see what styles already exist — reference them rather than recreating, and avoid name collisions.',
     {
       siteId: z.string().describe('The Webflow site ID'),
+      pageId: z.string().describe('The page ID (from list_pages)'),
     },
-    async ({ siteId }) => {
-      const { snapshot, error } = await requestSnapshot(siteId);
-      if (error) return fail(error);
+    async ({ siteId, pageId }) => {
+      let client;
+      try { client = registry.getClient(siteId); } catch (e) { return fail(e.message); }
 
-      // Extract just the styles section from the snapshot summary
-      const parts = snapshot.summary.split('── Site styles ──────────────────────');
-      const classLine = parts[1] ? parts[1].trim() : '';
-      const classes = classLine
-        ? classLine.split(',').map((c) => c.trim()).filter(Boolean)
-        : [];
+      let allNodes = [];
+      let offset = 0;
+      const limit = 100;
+      try {
+        while (true) {
+          const data = await client.getPageContent(pageId, { limit, offset });
+          const nodes = (data && data.nodes) ? data.nodes : [];
+          allNodes = allNodes.concat(nodes);
+          if (!data.pagination || allNodes.length >= data.pagination.total) break;
+          offset += limit;
+        }
+      } catch (e) {
+        return fail(`Failed to get page content: ${e.message}`);
+      }
 
-      return ok({
-        count: classes.length,
-        classes,
-        note: 'From Designer Extension snapshot — reflects all styles in the site.',
-      });
+      const classPattern = /class="([^"]+)"/g;
+      const allClasses = new Set();
+      for (const node of allNodes) {
+        const html = node.text?.html || '';
+        let match;
+        classPattern.lastIndex = 0;
+        while ((match = classPattern.exec(html)) !== null) {
+          for (const cls of match[1].split(/\s+/)) {
+            if (cls) allClasses.add(cls);
+          }
+        }
+      }
+
+      const classes = [...allClasses].sort();
+      return ok({ count: classes.length, classes });
     }
   );
 
