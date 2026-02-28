@@ -20,12 +20,33 @@ Direct MCP-to-Designer connections are fragile (tab-focus-dependent, timeout-pro
 
 ```bash
 # Start the MCP relay
-cd mcp-server && cp .env.example .env  # add WEBFLOW_API_TOKEN
+cd mcp-server && cp .env.example .env  # add your site-level WEBFLOW_API_TOKEN
 npm install && npm start
 
-# Start the extension (in separate terminal)
+# Start the extension dev server (separate terminal)
 cd extension && npm install && npm run dev
-# Then in Webflow: Apps → Add Extension → localhost:1337
+```
+
+### Designer Extension setup (one-time)
+
+1. **Create an app** in Webflow Dashboard → Workspace Settings → Apps & Integrations → Develop → New App
+   Enable: **Designer Extension** + **Data client** (CMS read/write, Pages, Assets, Publish)
+
+2. **Authenticate the Webflow CLI** when prompted on first `npm run dev`
+   Get a **workspace-level** token from Account Settings → Integrations → API Access
+   _(This is separate from the site-level token used by the MCP relay)_
+
+3. **Open your site** in Webflow Designer → Apps panel → **Plinth Builder**
+   The extension loads automatically from `localhost:1337` while the dev server is running
+
+### Production deployment
+
+To run the extension without a local dev server:
+
+```bash
+cd extension && npm run build
+# Runs webpack + `webflow extension bundle`, producing a .zip
+# Upload via Webflow Dashboard → your app → Hosting
 ```
 
 ## BuildPlan Format
@@ -46,3 +67,7 @@ cd extension && npm install && npm run dev
 ```
 
 See `skill/SKILL.md` and `skill/schemas/buildplan.schema.json` for full spec.
+
+## Using with claude.ai
+
+No MCP server required. Add `skill/SKILL.md` as a knowledge file in a claude.ai Project, ask Claude to generate BuildPlan JSON, then paste it into the extension's manual input area in Webflow Designer.
