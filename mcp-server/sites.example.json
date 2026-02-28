@@ -1,0 +1,12 @@
+[
+  {
+    "siteId": "your_site_id_here",
+    "name": "my-site",
+    "apiToken": "your_api_token_here"
+  },
+  {
+    "siteId": "your_other_site_id",
+    "name": "other-site",
+    "apiToken": "your_other_token_here"
+  }
+]

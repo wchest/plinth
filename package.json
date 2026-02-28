@@ -1,0 +1,33 @@
+{
+  "name": "plinth",
+  "version": "0.1.0",
+  "description": "Queue-based Webflow page builder — generate BuildPlan JSON, queue it, watch it appear in the Designer",
+  "bin": {
+    "plinth": "bin/plinth.js"
+  },
+  "scripts": {
+    "dev:extension": "cd extension && npm run dev",
+    "dev:server": "cd mcp-server && npm start",
+    "validate": "node -e \"const s = require('./skill/schemas/buildplan.schema.json'); console.log('Schema OK:', s.title)\""
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0",
+    "cors": "^2.8.5",
+    "dotenv": "^16.0.0",
+    "express": "^4.18.0",
+    "zod": "^3.22.0"
+  },
+  "files": [
+    "bin/",
+    "mcp-server/",
+    "skill/",
+    "reference/",
+    "CLAUDE.md",
+    "README.md"
+  ],
+  "keywords": ["webflow", "cms", "page-builder", "mcp", "claude"],
+  "license": "MIT",
+  "engines": {
+    "node": ">=18"
+  }
+}

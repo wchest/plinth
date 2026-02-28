@@ -1,0 +1,5 @@
+{
+  "siteId": "your_site_id_here",
+  "name": "your-site-name",
+  "apiToken": "your_webflow_api_token_here"
+}

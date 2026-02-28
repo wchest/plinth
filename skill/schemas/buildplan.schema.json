@@ -1,0 +1,237 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://plinth.build/schemas/buildplan.json",
+  "title": "BuildPlan",
+  "description": "A structured JSON document describing one section of a Webflow page. Claude generates; the Designer Extension consumes.",
+  "type": "object",
+  "required": ["version", "siteId", "sectionName", "order", "tree"],
+  "additionalProperties": false,
+  "properties": {
+    "version": {
+      "type": "string",
+      "const": "1.0",
+      "description": "BuildPlan schema version"
+    },
+    "siteId": {
+      "type": "string",
+      "description": "Webflow site ID"
+    },
+    "pageId": {
+      "type": "string",
+      "description": "Optional: target page ID within the site"
+    },
+    "sectionName": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9-]*$",
+      "description": "Short descriptive slug for this section (kebab-case)"
+    },
+    "order": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Build order (1 = first section on page)"
+    },
+    "styles": {
+      "type": "array",
+      "description": "Style definitions to create before building the element tree",
+      "items": { "$ref": "#/definitions/StyleObject" },
+      "default": []
+    },
+    "variables": {
+      "type": "array",
+      "description": "Design variable definitions (colors, sizes, etc.)",
+      "items": { "$ref": "#/definitions/VariableObject" },
+      "default": []
+    },
+    "tree": {
+      "$ref": "#/definitions/ElementNode",
+      "description": "Root element — must be type Section"
+    }
+  },
+  "definitions": {
+    "StyleObject": {
+      "type": "object",
+      "required": ["name", "properties"],
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9-]*$",
+          "description": "Style name — kebab-case, must match className in elements"
+        },
+        "parentStyle": {
+          "type": "string",
+          "description": "Optional: parent style name for combo classes"
+        },
+        "properties": {
+          "$ref": "#/definitions/CSSProperties",
+          "description": "Default (main breakpoint) CSS properties — all longhand"
+        },
+        "breakpoints": {
+          "type": "object",
+          "description": "Breakpoint-specific overrides",
+          "additionalProperties": false,
+          "properties": {
+            "xxl":    { "$ref": "#/definitions/CSSProperties" },
+            "xl":     { "$ref": "#/definitions/CSSProperties" },
+            "large":  { "$ref": "#/definitions/CSSProperties" },
+            "medium": { "$ref": "#/definitions/CSSProperties" },
+            "small":  { "$ref": "#/definitions/CSSProperties" },
+            "tiny":   { "$ref": "#/definitions/CSSProperties" }
+          }
+        },
+        "pseudo": {
+          "type": "object",
+          "description": "Pseudo-state overrides",
+          "additionalProperties": false,
+          "properties": {
+            "hover":           { "$ref": "#/definitions/CSSProperties" },
+            "active":          { "$ref": "#/definitions/CSSProperties" },
+            "focus":           { "$ref": "#/definitions/CSSProperties" },
+            "visited":         { "$ref": "#/definitions/CSSProperties" },
+            "before":          { "$ref": "#/definitions/CSSProperties" },
+            "after":           { "$ref": "#/definitions/CSSProperties" },
+            "first-child":     { "$ref": "#/definitions/CSSProperties" },
+            "last-child":      { "$ref": "#/definitions/CSSProperties" },
+            "nth-child(odd)":  { "$ref": "#/definitions/CSSProperties" },
+            "nth-child(even)": { "$ref": "#/definitions/CSSProperties" },
+            "placeholder":     { "$ref": "#/definitions/CSSProperties" },
+            "focus-visible":   { "$ref": "#/definitions/CSSProperties" },
+            "focus-within":    { "$ref": "#/definitions/CSSProperties" },
+            "empty":           { "$ref": "#/definitions/CSSProperties" }
+          }
+        }
+      }
+    },
+    "CSSProperties": {
+      "type": "object",
+      "description": "CSS property map — longhand only, string values",
+      "additionalProperties": { "type": "string" }
+    },
+    "VariableObject": {
+      "type": "object",
+      "required": ["name", "type", "value"],
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Variable name (e.g. forest-green)"
+        },
+        "type": {
+          "type": "string",
+          "enum": ["color", "size", "number", "percentage", "fontFamily"],
+          "description": "Variable type"
+        },
+        "value": {
+          "description": "Variable value — string, number, or {value, unit} object",
+          "oneOf": [
+            { "type": "string" },
+            { "type": "number" },
+            {
+              "type": "object",
+              "required": ["value", "unit"],
+              "properties": {
+                "value": { "type": "number" },
+                "unit":  { "type": "string" }
+              }
+            }
+          ]
+        },
+        "collectionName": {
+          "type": "string",
+          "description": "Variable collection name (default: 'Design System')"
+        }
+      }
+    },
+    "ElementAttribute": {
+      "type": "object",
+      "required": ["name", "value"],
+      "additionalProperties": false,
+      "properties": {
+        "name":  { "type": "string" },
+        "value": { "type": "string" }
+      }
+    },
+    "ElementNode": {
+      "type": "object",
+      "required": ["type", "className"],
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": ["Section", "DivBlock", "Container", "Heading", "Paragraph", "TextBlock", "Button", "TextLink", "LinkBlock", "Image", "DOM"],
+          "description": "Element type — maps to Webflow Designer API element"
+        },
+        "className": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9-]*$",
+          "description": "CSS class name (kebab-case) — must match a style name defined in styles[]"
+        },
+        "text": {
+          "type": "string",
+          "description": "Text content for Heading, Paragraph, TextBlock, Button, TextLink"
+        },
+        "headingLevel": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 6,
+          "description": "Required for Heading elements"
+        },
+        "href": {
+          "type": "string",
+          "description": "Required for Button, TextLink, LinkBlock"
+        },
+        "linkType": {
+          "type": "string",
+          "enum": ["url", "page", "element", "email", "phone", "file"],
+          "default": "url",
+          "description": "Link type (default: url)"
+        },
+        "src": {
+          "type": "string",
+          "description": "Required for Image — asset URL or asset ID"
+        },
+        "alt": {
+          "type": "string",
+          "description": "Required for Image — accessible description"
+        },
+        "domTag": {
+          "type": "string",
+          "description": "Required for DOM type — HTML tag name (e.g. span, code, em)"
+        },
+        "attributes": {
+          "type": "array",
+          "items": { "$ref": "#/definitions/ElementAttribute" },
+          "description": "Custom HTML attributes"
+        },
+        "children": {
+          "type": "array",
+          "items": { "$ref": "#/definitions/ElementNode" },
+          "description": "Child elements — max 6 levels deep from Section root"
+        }
+      },
+      "if": { "properties": { "type": { "const": "Section" } } },
+      "then": { "not": { "required": ["href"] } },
+      "allOf": [
+        {
+          "if": { "properties": { "type": { "enum": ["Heading"] } }, "required": ["type"] },
+          "then": { "required": ["headingLevel", "text"] }
+        },
+        {
+          "if": { "properties": { "type": { "enum": ["Paragraph", "TextBlock"] } }, "required": ["type"] },
+          "then": { "required": ["text"] }
+        },
+        {
+          "if": { "properties": { "type": { "enum": ["Button", "TextLink", "LinkBlock"] } }, "required": ["type"] },
+          "then": { "required": ["href"] }
+        },
+        {
+          "if": { "properties": { "type": { "const": "Image" } }, "required": ["type"] },
+          "then": { "required": ["src", "alt"] }
+        },
+        {
+          "if": { "properties": { "type": { "const": "DOM" } }, "required": ["type"] },
+          "then": { "required": ["domTag"] }
+        }
+      ]
+    }
+  }
+}

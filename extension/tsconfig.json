@@ -1,0 +1,14 @@
+{
+  "compilerOptions": {
+    "outDir": "public",
+    "target": "es6",
+    "lib": ["es2020", "dom"],
+    "typeRoots": ["./node_modules/@types", "./node_modules/@webflow"],
+    "types": ["designer-extension-typings", "react", "react-dom"],
+    "jsx": "react",
+    "esModuleInterop": true,
+    "baseUrl": "./"
+  },
+  "include": ["src/**/*.ts", "src/**/*.tsx", "src/types.d.ts"],
+  "exclude": ["node_modules"]
+}
