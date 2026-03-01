@@ -31,6 +31,7 @@ When the MCP server is registered, these tools are available:
 - `update_styles(siteId, styles[])` — update CSS properties on existing named styles
 - `update_content(siteId, updates[])` — patch text/href/src/alt on elements by class name
 - `insert_elements(siteId, nodes[], parentClass?, afterClass?)` — add elements inside or after an existing element
+- `take_screenshot(siteId, sectionClass?, pageSlug?, skipPublish?)` — publish to staging + screenshot (requires puppeteer-core)
 
 **Note**: `get_page_dom` and `list_styles` use the Webflow Data API and reflect saved content nodes only (no structural elements). All other extension tools require the Designer Extension to be open and connected.
 

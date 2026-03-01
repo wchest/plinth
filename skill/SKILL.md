@@ -297,16 +297,20 @@ queue_buildplan(plan, wait=true)
 - On **success**: returns `{ sectionClass, buildStats: { elementsCreated, stylesCreated, elapsedMs } }`. The item is automatically removed from the queue.
 
 **3. Verify — mandatory after every build**
+
+First, confirm the structure:
 ```
 get_page_snapshot(siteId)
 ```
-You MUST call this after every successful build. Check:
-- `Section#<elementId> .{sectionClass}` appears in the output
-- The element count matches `buildStats.elementsCreated`
-- Key child elements (headings, buttons, images) are present with the right class names
-- No unexpected extra sections exist (watch for accidental duplicates)
+Check that `Section#<elementId> .{sectionClass}` appears, element count matches, key children are present, no duplicates.
 
-The `elementId` from the Section line is what you'll pass as `insertAfterElementId` for the next section.
+Then, if `puppeteer-core` is installed, get a visual confirmation:
+```
+take_screenshot(siteId, sectionClass="hero-section")
+```
+This publishes to the `.webflow.io` staging subdomain and returns an image of just that section. Takes ~25 seconds (20 s for Webflow's staging build + screenshot). Use `skipPublish=true` if you know the current staging is up to date.
+
+The `elementId` from the Section line in `get_page_snapshot` is what you'll pass as `insertAfterElementId` or `insertAfterSectionClass` for the next section.
 
 **4. Next section**
 Set `insertAfterElementId` to the element ID found in step 3. Generate the next plan. Repeat from step 2.

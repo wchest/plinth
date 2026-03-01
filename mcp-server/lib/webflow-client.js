@@ -197,6 +197,21 @@ class WebflowClient {
     return { classes: [...classes].sort(), nodeCount: nodes.length };
   }
 
+  async getSiteInfo() {
+    return this._request('GET', `/sites/${this.siteId}`);
+  }
+
+  /**
+   * Publish the site to the Webflow staging subdomain (.webflow.io) only.
+   * Does NOT publish to any custom domains.
+   */
+  async publishToStaging() {
+    return this._request('POST', `/sites/${this.siteId}/publish`, {
+      publishToWebflowSubdomain: true,
+      customDomains: [],
+    });
+  }
+
   async healthCheck() {
     try {
       const data = await this._request('GET', `/sites/${this.siteId}`);

@@ -21,6 +21,7 @@ const { z } = require('zod');
 const SiteRegistry = require('./lib/site-registry');
 const { validateBuildPlan, ValidationError } = require('./lib/validator');
 const { writeToClipboard } = require('./lib/clipboard');
+const { takeScreenshot, checkAvailability } = require('./lib/screenshot');
 
 // --- Config resolution -----------------------------------------------
 // Same priority order as the HTTP server.
@@ -812,6 +813,90 @@ async function main() {
         `Copied to clipboard via ${method} (${nodeCount} nodes, ${styleCount} styles).\n` +
         `Switch to Webflow Designer and press Ctrl+V (or Cmd+V) to paste.`,
       );
+    }
+  );
+
+  // ── take_screenshot ───────────────────────────────────────────────
+  server.tool(
+    'take_screenshot',
+    'Publish the site to its Webflow staging subdomain (.webflow.io) then take a screenshot ' +
+    'and return it as an image. Use sectionClass to screenshot just the built section. ' +
+    'Requires puppeteer-core and Chrome/Chromium — run: cd plinth/mcp-server && npm install puppeteer-core',
+    {
+      siteId: z.string().describe('The Webflow site ID'),
+      sectionClass: z.string().optional().describe(
+        'CSS class of the section to screenshot (e.g. "hero-section"). ' +
+        'If omitted, screenshots the full page.'
+      ),
+      pageSlug: z.string().optional().describe(
+        'Page slug to navigate to (e.g. "about"). Omit for the home page.'
+      ),
+      skipPublish: z.boolean().optional().describe(
+        'Skip the publish step and screenshot the current live staging URL. Default: false.'
+      ),
+    },
+    async ({ siteId, sectionClass, pageSlug, skipPublish = false }) => {
+      // Check availability upfront
+      const availability = checkAvailability();
+      if (!availability.available) {
+        return fail(
+          `Screenshot unavailable: ${availability.reason}.\n` +
+          `Fix: ${availability.install}`
+        );
+      }
+
+      let client;
+      try { client = registry.getClient(siteId); } catch (e) { return fail(e.message); }
+
+      // Get site info (shortName → staging URL)
+      let siteInfo;
+      try {
+        siteInfo = await client.getSiteInfo();
+      } catch (e) {
+        return fail(`Could not get site info: ${e.message}`);
+      }
+
+      const shortName = siteInfo.shortName || siteInfo.name;
+      if (!shortName) {
+        return fail('Could not determine the site\'s Webflow subdomain from the API response.');
+      }
+
+      const slug     = pageSlug ? `/${pageSlug.replace(/^\//, '')}` : '';
+      const stageUrl = `https://${shortName}.webflow.io${slug}`;
+
+      // Publish to staging (unless skipped)
+      if (!skipPublish) {
+        try {
+          log(`Publishing ${siteId} to ${stageUrl}…`);
+          await client.publishToStaging();
+        } catch (e) {
+          return fail(`Failed to publish to staging: ${e.message}`);
+        }
+
+        // Wait for Webflow's CDN to propagate the build (~20 s for most sites)
+        log('Waiting 20 s for staging build to complete…');
+        await new Promise((r) => setTimeout(r, 20_000));
+      }
+
+      // Take the screenshot
+      log(`Screenshotting ${stageUrl}${sectionClass ? ` (section: .${sectionClass})` : ' (full page)'}…`);
+      let base64;
+      try {
+        base64 = await takeScreenshot(stageUrl, { sectionClass });
+      } catch (e) {
+        return fail(`Screenshot failed: ${e.message}`);
+      }
+
+      const label = sectionClass
+        ? `Section .${sectionClass} on ${stageUrl}`
+        : `Full page: ${stageUrl}`;
+
+      return {
+        content: [
+          { type: 'text', text: label },
+          { type: 'image', data: base64, mimeType: 'image/png' },
+        ],
+      };
     }
   );
 
