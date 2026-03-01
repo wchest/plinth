@@ -133,11 +133,19 @@ async function main() {
       const relayUrl = registry.relayUrl;
       const statusUrl = `${relayUrl}/status/${item.id}?siteId=${encodeURIComponent(plan.siteId)}`;
 
-      const TIMEOUT_MS = 90_000;
-      const POLL_INTERVAL_MS = 2_000;
-      const deadline = Date.now() + TIMEOUT_MS;
+      // Two-phase timeout:
+      //   Phase 1 — pending: extension hasn't picked it up yet (30 s max)
+      //   Phase 2 — building: extension is working; give it much more time (5 min)
+      // This prevents false timeouts on complex sections while still catching
+      // the case where the extension is not open at all.
+      const POLL_INTERVAL_MS  = 2_000;
+      const PICKUP_TIMEOUT_MS = 30_000;  // fail if never picked up within 30 s
+      const BUILD_TIMEOUT_MS  = 300_000; // allow up to 5 min once building starts
 
-      while (Date.now() < deadline) {
+      const pickupDeadline = Date.now() + PICKUP_TIMEOUT_MS;
+      let buildDeadline = null; // set when status transitions to 'building'
+
+      while (true) {
         await new Promise(r => setTimeout(r, POLL_INTERVAL_MS));
         let built;
         try {
@@ -147,6 +155,12 @@ async function main() {
         } catch (_) {
           continue;
         }
+
+        if (built.status === 'building' && buildDeadline === null) {
+          // Extension picked it up — start the build-phase clock
+          buildDeadline = Date.now() + BUILD_TIMEOUT_MS;
+        }
+
         if (built.status === 'done' || built.status === 'error') {
           // Fetch build log before cleanup
           let buildLog = [];
@@ -178,12 +192,26 @@ async function main() {
             `Fix the plan and re-queue. The failed item (${built.id}) remains in the queue for inspection.`
           );
         }
-      }
 
-      return fail(
-        `Build timed out after ${TIMEOUT_MS / 1000}s — the Designer Extension may not be open or connected.\n` +
-        `itemId: ${item.id} — check status with get_queue_status, then clear it and re-queue once the Extension is ready.`
-      );
+        // Check timeouts
+        const now = Date.now();
+        if (buildDeadline !== null && now > buildDeadline) {
+          return fail(
+            `Build timed out after ${BUILD_TIMEOUT_MS / 60_000} minutes.\n` +
+            `The Extension picked up the item but hasn't finished — it may have crashed.\n\n` +
+            `DO NOT re-queue yet. First call get_queue_status to check the current state.\n` +
+            `itemId: ${item.id}`
+          );
+        }
+        if (buildDeadline === null && now > pickupDeadline) {
+          return fail(
+            `Build timed out — the Designer Extension did not pick up the item within ${PICKUP_TIMEOUT_MS / 1000}s.\n\n` +
+            `The item is still in the queue (itemId: ${item.id}).\n` +
+            `DO NOT re-queue. The Extension will pick it up as soon as it connects.\n` +
+            `Make sure the Designer Extension panel is open and the relay URL is set to localhost:3847.`
+          );
+        }
+      }
     }
   );
 
