@@ -11,6 +11,8 @@
  *   4. Writes .plinth.json to the current directory
  *   5. Adds .plinth.json to .gitignore
  *   6. Registers the MCP server with Claude Code (project-scoped)
+ *   7. Writes CLAUDE.md so Claude Code knows how to use Plinth in this project
+ *   8. Copies skill/SKILL.md (BuildPlan reference) into the project
  *
  * Usage:
  *   node /path/to/plinth/mcp-server/init.js
@@ -217,6 +219,117 @@ function registerMcpServer(configPath) {
   );
 }
 
+// ── Scaffold helpers ──────────────────────────────────────────────────────────
+
+const SKILL_SRC = path.join(__dirname, '..', 'skill', 'SKILL.md');
+
+/**
+ * Generate the CLAUDE.md content for a project directory.
+ * This is what Claude Code reads automatically when opened in the project.
+ */
+function generateClaudeMd(siteId, name) {
+  return `# ${name} — Webflow Builder
+
+Build Webflow pages by generating structured BuildPlan JSON.
+Plans are queued in a CMS collection and executed by a Designer Extension.
+
+## Site
+- **Name**: ${name}
+- **Site ID**: \`${siteId}\`
+- **MCP relay**: \`localhost:3847\`
+
+## Architecture
+- Claude generates BuildPlan JSON (see \`skill/SKILL.md\`)
+- Plans are written to a "_Build Queue" CMS collection on the site
+- A Designer Extension polls the queue and builds elements via the Designer API
+- Claude Code calls MCP tools directly (no manual relay needed)
+
+## MCP Tools Available
+When Claude Code is open in this directory, these tools are registered:
+- \`queue_buildplan(plan, wait=true)\` — validate + add a BuildPlan; blocks until built
+- \`get_queue_status(siteId)\` — list all queue items and their status
+- \`clear_queue(siteId)\` — remove done/error items
+- \`health_check()\` — verify Webflow connectivity
+- \`list_pages(siteId)\` — list pages with id, title, slug
+- \`get_page_dom(siteId, pageId)\` — content nodes + class names (Data API, no extension)
+- \`list_styles(siteId, pageId)\` — list CSS class names on a page
+- \`get_page_snapshot(siteId)\` — full structural DOM via Designer Extension
+- \`delete_elements(siteId, elementIds[])\` — delete elements by ID
+- \`delete_section(siteId, sectionClass)\` — delete Sections by class name
+- \`update_styles(siteId, styles[])\` — update CSS on existing named styles
+- \`update_content(siteId, updates[])\` — patch text/href/src/alt by class name
+
+Extension tools (\`get_page_snapshot\`, \`delete_*\`, \`update_*\`) require the
+Designer Extension panel to be open and connected.
+
+## BuildPlan Rules
+- All CSS must be longhand (\`padding-top\`, not \`padding\`)
+- Every visible element needs a \`className\` (kebab-case)
+- Text content goes in the \`text\` field, not in children
+- Headings need \`headingLevel\` (1–6)
+- Links/buttons need \`href\`
+- Images need \`src\` and \`alt\`
+- Max nesting: 6 levels
+- One BuildPlan = one section (Section as root element)
+
+## Workflow
+1. Read \`skill/SKILL.md\` and any project design system docs
+2. Orient: \`get_page_snapshot(siteId)\` to see what's on canvas, \`get_queue_status\` for pending items
+3. Generate a BuildPlan for **one section at a time**
+4. Call \`queue_buildplan(plan, wait=true)\` — blocks until built, returns errors inline
+5. **Verify immediately**: call \`get_page_snapshot\` — confirm the section exists and structure is correct
+6. Use the section's element ID as \`insertAfterElementId\` for the next section
+7. Repeat from step 3
+
+**Editing existing sections**: use \`update_styles\`, \`update_content\`, or \`replacesSectionClass\`
+in the BuildPlan — see \`skill/SKILL.md\` for the decision guide.
+`;
+}
+
+/**
+ * Write CLAUDE.md to the project directory.
+ * - If none exists: write it.
+ * - If one exists but has no plinth content: append a plinth section.
+ * - If one exists and already has plinth content: skip (idempotent).
+ */
+function writeClaudeMd(siteId, name) {
+  const dest = path.join(CWD, 'CLAUDE.md');
+  const content = generateClaudeMd(siteId, name);
+
+  if (!fs.existsSync(dest)) {
+    fs.writeFileSync(dest, content);
+    return 'written';
+  }
+
+  const existing = fs.readFileSync(dest, 'utf8');
+  if (existing.includes('queue_buildplan') || existing.includes('BuildPlan Rules')) {
+    return 'already contains plinth config — skipped';
+  }
+
+  fs.appendFileSync(dest, '\n---\n\n' + content);
+  return 'appended to existing CLAUDE.md';
+}
+
+/**
+ * Copy skill/SKILL.md from the plinth source into the project's skill/ directory.
+ * Skips if the destination already exists (preserves user customisations).
+ */
+function writeSkillMd() {
+  if (!fs.existsSync(SKILL_SRC)) return 'source not found — skipped';
+
+  const skillDir = path.join(CWD, 'skill');
+  const dest     = path.join(skillDir, 'SKILL.md');
+
+  if (fs.existsSync(dest)) return 'already exists — skipped';
+
+  if (!fs.existsSync(skillDir)) {
+    fs.mkdirSync(skillDir, { recursive: true });
+  }
+
+  fs.copyFileSync(SKILL_SRC, dest);
+  return 'written';
+}
+
 // ── Main ─────────────────────────────────────────────────────────────────────
 async function main() {
   console.log(`\n${bold('Plinth Init')} ${dim('— Webflow page builder setup')}\n`);
@@ -312,6 +425,26 @@ async function main() {
   } catch (e) {
     console.log(warn('skipped — claude CLI not found in PATH'));
     console.log(dim(`  Run manually: claude mcp add plinth -s project -e PLINTH_CONFIG=${configPath} -- node ${MCP_ENTRY}`));
+  }
+
+  // ── 7. Write CLAUDE.md ─────────────────────────────────────────────────────
+
+  process.stdout.write('Writing CLAUDE.md… ');
+  try {
+    const claudeResult = writeClaudeMd(siteId, name);
+    console.log(ok(claudeResult));
+  } catch (e) {
+    console.log(warn(`skipped — ${e.message}`));
+  }
+
+  // ── 8. Write skill/SKILL.md ────────────────────────────────────────────────
+
+  process.stdout.write('Writing skill/SKILL.md… ');
+  try {
+    const skillResult = writeSkillMd();
+    console.log(ok(skillResult));
+  } catch (e) {
+    console.log(warn(`skipped — ${e.message}`));
   }
 
   // ── Done ───────────────────────────────────────────────────────────────────
