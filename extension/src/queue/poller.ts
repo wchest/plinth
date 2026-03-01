@@ -93,7 +93,11 @@ export class BuildQueuePoller {
         throw new Error(result.error ?? 'Build failed with no error message');
       }
 
-      await setItemStatus(siteId, item.id, 'done', relayUrl);
+      await setItemStatus(siteId, item.id, 'done', relayUrl, undefined, {
+        elementsCreated: result.elementsCreated,
+        stylesCreated: result.stylesCreated,
+        elapsedMs: result.elapsedMs,
+      });
       this.config.onBuildComplete?.({ ...updatedItem, status: 'done' }, result);
     } catch (err) {
       const error = err instanceof Error ? err : new Error(String(err));

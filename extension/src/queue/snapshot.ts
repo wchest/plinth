@@ -69,32 +69,43 @@ async function captureSnapshot(): Promise<SnapshotPayload> {
     }
   } catch { /* non-fatal */ }
 
-  // ── Style name lookup map ────────────────────────────────────────
-  // Fetch all site styles upfront so we can resolve IDs → names in
-  // one batch rather than one call per element.
+  // ── All elements (one call) + all styles (one call + batched names) ──
+  const [allElements, allStyles] = await Promise.all([
+    webflow.getAllElements().catch(() => [] as AnyElement[]),
+    webflow.getAllStyles().catch(() => [] as Style[]),
+  ]);
+
   const styleNames = new Map<string, string>();
   try {
-    const allStyles = await webflow.getAllStyles();
-    const names     = await Promise.all(allStyles.map((s) => s.getName()));
+    const names = await Promise.all(allStyles.map((s) => s.getName()));
     allStyles.forEach((s, i) => styleNames.set(s.id, names[i]));
   } catch { /* proceed without style names */ }
 
-  // ── Element tree ─────────────────────────────────────────────────
-  const lines: string[] = [];
-  try {
-    const root = await webflow.getRootElement();
-    if (root) {
-      await traverseElement(root, 0, styleNames, lines);
-    } else {
-      lines.push('(no root element — is a page open in the Designer?)');
-    }
-  } catch (err) {
-    lines.push(
-      `(error traversing DOM: ${err instanceof Error ? err.message : String(err)})`
-    );
-  }
+  // ── Get styles for every element in parallel ─────────────────────
+  const elementStyles = await Promise.all(
+    allElements.map(async (el) => {
+      if (!('styles' in el) || el.styles !== true) return [];
+      try {
+        const applied = await (el as any).getStyles() as Array<{ id: string } | null> | null;
+        if (!applied) return [];
+        return applied
+          .filter(Boolean)
+          .map((s: { id: string }) => styleNames.get(s.id) ?? s.id)
+          .filter(Boolean) as string[];
+      } catch { return []; }
+    })
+  );
 
-  // ── Append site-wide style list at bottom ────────────────────────
+  // ── Build flat summary (type + id + classes per element) ─────────
+  const lines: string[] = [];
+  allElements.forEach((el, i) => {
+    const type    = el.type || '?';
+    const id      = el.id?.element ? `#${el.id.element}` : '';
+    const classes = elementStyles[i].length ? ' .' + elementStyles[i].join('.') : '';
+    lines.push(`${type}${id}${classes}`);
+  });
+
+  // ── Append site-wide style list ──────────────────────────────────
   if (styleNames.size > 0) {
     lines.push('');
     lines.push('── Site styles ──────────────────────');
@@ -102,62 +113,4 @@ async function captureSnapshot(): Promise<SnapshotPayload> {
   }
 
   return { summary: lines.join('\n'), pageInfo };
-}
-
-async function traverseElement(
-  el:         AnyElement,
-  depth:      number,
-  styleNames: Map<string, string>,
-  lines:      string[],
-): Promise<void> {
-  const indent = '  '.repeat(depth);
-  const type   = el.type || '?';
-
-  // Applied class names (styles)
-  let classes = '';
-  if ('styles' in el && el.styles === true) {
-    try {
-      const applied = await (el as any).getStyles() as Array<{ id: string } | null> | null;
-      if (applied) {
-        const names = applied
-          .filter(Boolean)
-          .map((s: { id: string }) => styleNames.get(s.id) ?? s.id)
-          .filter(Boolean);
-        if (names.length) classes = ' .' + names.join('.');
-      }
-    } catch { /* ignore */ }
-  }
-
-  // Text content (only String elements have getText())
-  let textSnippet = '';
-  if (type === 'String') {
-    try {
-      const text = await (el as any).getText() as string | null;
-      if (text) {
-        const t = text.trim().replace(/\s+/g, ' ');
-        textSnippet = ` "${t.slice(0, 80)}${t.length > 80 ? '…' : ''}"`;
-      }
-    } catch { /* ignore */ }
-  }
-
-  lines.push(`${indent}${type}${classes}${textSnippet}`);
-
-  if (depth >= MAX_DEPTH) return;
-
-  // Recurse into children
-  if ('children' in el && el.children === true) {
-    try {
-      const children = await (el as any).getChildren() as AnyElement[];
-      if (!children || children.length === 0) return;
-
-      const shown = children.slice(0, MAX_CHILDREN);
-      for (const child of shown) {
-        await traverseElement(child, depth + 1, styleNames, lines);
-      }
-
-      if (children.length > MAX_CHILDREN) {
-        lines.push(`${indent}  … (${children.length - MAX_CHILDREN} more)`);
-      }
-    } catch { /* ignore */ }
-  }
 }

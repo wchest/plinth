@@ -4,6 +4,7 @@ import { QueueItem } from './queue/status';
 import { discoverConfig, DiscoveredConfig } from './queue/discovery';
 import { executeBuildPlan } from './builder/executor';
 import { checkAndSendSnapshot } from './queue/snapshot';
+import { checkAndSendDelete }   from './queue/delete';
 import { BUILD_TIME } from './version';
 
 export type { BuildResult } from './builder/executor';
@@ -231,15 +232,15 @@ export default function App() {
     else if (!isPolling && poller.isRunning()) poller.stop();
   }, [isPolling]);
 
-  // Always-on snapshot heartbeat — polls relay every 3 s for get_page_dom requests
-  // even when the build queue poller is paused. Lightweight: only does work when
-  // Claude has called get_page_dom or list_styles.
+  // Always-on heartbeats — poll relay every 3 s for snapshot/delete requests.
+  // Lightweight: only does real work when Claude has called a relevant tool.
   useEffect(() => {
     if (!storedConfig || !discovered) return;
     const { siteId } = discovered;
     const { relayUrl } = storedConfig;
     const id = setInterval(() => {
       checkAndSendSnapshot(siteId, relayUrl);
+      checkAndSendDelete(siteId, relayUrl);
     }, 3000);
     return () => clearInterval(id);
   }, [storedConfig, discovered]);

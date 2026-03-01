@@ -1,24 +1,33 @@
 'use strict';
 
-const SHORTHAND_PROPERTIES = new Set([
-  'padding',
-  'margin',
-  'border-radius',
-  'gap',
-  'row-gap',
-  'column-gap',
-  'background',
-  'font',
-  'border',
-  'outline',
-  'list-style',
-  'animation',
-  'transition',
-  'flex',
-  'grid-template',
+// ---------------------------------------------------------------------------
+// Constants — kept in sync with extension/src/builder/validator.ts
+// ---------------------------------------------------------------------------
+
+const VALID_ELEMENT_TYPES = new Set([
+  'Section', 'DivBlock', 'Container', 'Heading', 'Paragraph',
+  'TextBlock', 'Button', 'TextLink', 'LinkBlock', 'Image', 'DOM',
+  'DynamoWrapper',
 ]);
 
-const KEBAB_CASE_RE = /^[a-z][a-z0-9]*(-[a-z0-9]+)*$/;
+const TEXT_REQUIRED_TYPES = new Set(['Paragraph', 'TextBlock', 'Button', 'TextLink']);
+const LINK_REQUIRED_TYPES = new Set(['Button', 'TextLink', 'LinkBlock']);
+
+const SHORTHAND_PROPERTIES = new Set([
+  'padding', 'margin', 'border-radius', 'gap', 'row-gap', 'column-gap',
+  'background', 'font', 'border', 'outline', 'list-style', 'animation',
+  'transition', 'flex', 'grid-template',
+]);
+
+const KEBAB_CASE_RE = /^[a-z][a-z0-9-]*$/;
+
+// Extension counts Section as depth 1 and rejects depth > 6.
+// That means Section + 5 child levels max.
+const MAX_DEPTH = 6;
+
+// ---------------------------------------------------------------------------
+// Error
+// ---------------------------------------------------------------------------
 
 class ValidationError extends Error {
   constructor(message) {
@@ -26,6 +35,179 @@ class ValidationError extends Error {
     this.name = 'ValidationError';
   }
 }
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+function validateCSSProperties(props, context) {
+  if (props === null || typeof props !== 'object' || Array.isArray(props)) {
+    throw new ValidationError(`${context} must be an object`);
+  }
+  for (const key of Object.keys(props)) {
+    if (SHORTHAND_PROPERTIES.has(key)) {
+      throw new ValidationError(
+        `${context}: "${key}" is a shorthand CSS property and is not allowed. ` +
+        `Use longhand properties instead (e.g. padding-top, padding-right, ...).`
+      );
+    }
+    if (typeof props[key] !== 'string') {
+      throw new ValidationError(
+        `${context}: CSS property "${key}" must have a string value, got ${typeof props[key]}`
+      );
+    }
+  }
+}
+
+function validateStyleDef(style, index) {
+  if (style === null || typeof style !== 'object' || Array.isArray(style)) {
+    throw new ValidationError(`styles[${index}] must be an object`);
+  }
+
+  if (typeof style.name !== 'string' || !style.name) {
+    throw new ValidationError(`styles[${index}].name must be a non-empty string`);
+  }
+  if (!KEBAB_CASE_RE.test(style.name)) {
+    throw new ValidationError(
+      `styles[${index}].name "${style.name}" must be kebab-case ` +
+      `(lowercase letters, digits, hyphens; must start with a letter)`
+    );
+  }
+
+  if (!('properties' in style)) {
+    throw new ValidationError(
+      `styles[${index}] ("${style.name}") is missing required "properties" field`
+    );
+  }
+  validateCSSProperties(style.properties, `styles[${index}] ("${style.name}")`);
+
+  if (style.breakpoints != null) {
+    if (typeof style.breakpoints !== 'object' || Array.isArray(style.breakpoints)) {
+      throw new ValidationError(`styles[${index}] ("${style.name}").breakpoints must be an object`);
+    }
+    for (const bpId of Object.keys(style.breakpoints)) {
+      validateCSSProperties(
+        style.breakpoints[bpId],
+        `styles[${index}] ("${style.name}").breakpoints.${bpId}`
+      );
+    }
+  }
+
+  if (style.pseudo != null) {
+    if (typeof style.pseudo !== 'object' || Array.isArray(style.pseudo)) {
+      throw new ValidationError(`styles[${index}] ("${style.name}").pseudo must be an object`);
+    }
+    for (const state of Object.keys(style.pseudo)) {
+      validateCSSProperties(
+        style.pseudo[state],
+        `styles[${index}] ("${style.name}").pseudo.${state}`
+      );
+    }
+  }
+}
+
+function walkNode(node, path, depth) {
+  // Extension: Section starts at depth 1, rejects depth > MAX_DEPTH
+  if (depth > MAX_DEPTH) {
+    throw new ValidationError(
+      `${path}: element tree exceeds maximum nesting depth of ${MAX_DEPTH} levels`
+    );
+  }
+
+  if (node === null || typeof node !== 'object' || Array.isArray(node)) {
+    throw new ValidationError(`${path} must be an object`);
+  }
+
+  // type
+  if (typeof node.type !== 'string') {
+    throw new ValidationError(`${path}.type must be a string`);
+  }
+  if (!VALID_ELEMENT_TYPES.has(node.type)) {
+    throw new ValidationError(
+      `${path}.type "${node.type}" is not a recognised element type. ` +
+      `Valid types: ${[...VALID_ELEMENT_TYPES].join(', ')}`
+    );
+  }
+
+  // className — always required, must be kebab-case
+  if (typeof node.className !== 'string' || !node.className) {
+    throw new ValidationError(`${path}.className must be a non-empty string`);
+  }
+  if (!KEBAB_CASE_RE.test(node.className)) {
+    throw new ValidationError(
+      `${path}.className "${node.className}" must be kebab-case ` +
+      `(lowercase letters, digits, hyphens; must start with a letter)`
+    );
+  }
+
+  // Heading: headingLevel (1–6) and text required
+  if (node.type === 'Heading') {
+    if (
+      typeof node.headingLevel !== 'number' ||
+      !Number.isInteger(node.headingLevel) ||
+      node.headingLevel < 1 ||
+      node.headingLevel > 6
+    ) {
+      throw new ValidationError(
+        `${path}: Heading element requires headingLevel to be an integer between 1 and 6`
+      );
+    }
+    if (typeof node.text !== 'string' || !node.text.trim()) {
+      throw new ValidationError(`${path}: Heading element requires a non-empty "text" field`);
+    }
+  }
+
+  // Paragraph, TextBlock, Button, TextLink: text required
+  if (TEXT_REQUIRED_TYPES.has(node.type)) {
+    if (typeof node.text !== 'string' || !node.text.trim()) {
+      throw new ValidationError(
+        `${path}: ${node.type} element requires a non-empty "text" field`
+      );
+    }
+  }
+
+  // Button, TextLink, LinkBlock: href required
+  if (LINK_REQUIRED_TYPES.has(node.type)) {
+    if (typeof node.href !== 'string' || !node.href.trim()) {
+      throw new ValidationError(
+        `${path}: ${node.type} element requires a non-empty "href" field`
+      );
+    }
+  }
+
+  // Image: src and alt required
+  if (node.type === 'Image') {
+    if (typeof node.src !== 'string' || !node.src.trim()) {
+      throw new ValidationError(`${path}: Image element requires a non-empty "src" field`);
+    }
+    if (typeof node.alt !== 'string') {
+      throw new ValidationError(
+        `${path}: Image element requires an "alt" field (may be empty string for decorative images)`
+      );
+    }
+  }
+
+  // DOM: domTag required
+  if (node.type === 'DOM') {
+    if (typeof node.domTag !== 'string' || !node.domTag.trim()) {
+      throw new ValidationError(`${path}: DOM element requires a non-empty "domTag" field`);
+    }
+  }
+
+  // children
+  if (node.children != null) {
+    if (!Array.isArray(node.children)) {
+      throw new ValidationError(`${path}.children must be an array`);
+    }
+    node.children.forEach((child, i) => {
+      walkNode(child, `${path}.children[${i}]`, depth + 1);
+    });
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Public API
+// ---------------------------------------------------------------------------
 
 function validateBuildPlan(plan) {
   if (plan === null || typeof plan !== 'object' || Array.isArray(plan)) {
@@ -40,103 +222,60 @@ function validateBuildPlan(plan) {
   }
 
   // siteId
-  if (!plan.siteId || typeof plan.siteId !== 'string' || plan.siteId.trim() === '') {
-    throw new ValidationError('BuildPlan.siteId is required and must be a non-empty string');
+  if (typeof plan.siteId !== 'string' || !plan.siteId.trim()) {
+    throw new ValidationError('BuildPlan.siteId must be a non-empty string');
   }
 
-  // tree
-  if (!plan.tree || typeof plan.tree !== 'object' || Array.isArray(plan.tree)) {
+  // sectionName — kebab-case
+  if (typeof plan.sectionName !== 'string' || !plan.sectionName.trim()) {
+    throw new ValidationError('BuildPlan.sectionName must be a non-empty string');
+  }
+  if (!KEBAB_CASE_RE.test(plan.sectionName)) {
+    throw new ValidationError(
+      `BuildPlan.sectionName "${plan.sectionName}" must be kebab-case`
+    );
+  }
+
+  // order — positive integer
+  if (
+    typeof plan.order !== 'number' ||
+    !Number.isInteger(plan.order) ||
+    plan.order < 1
+  ) {
+    throw new ValidationError('BuildPlan.order must be a positive integer');
+  }
+
+  // styles (optional array)
+  if (plan.styles != null) {
+    if (!Array.isArray(plan.styles)) {
+      throw new ValidationError('BuildPlan.styles must be an array');
+    }
+    const seenNames = new Set();
+    plan.styles.forEach((styleDef, i) => {
+      validateStyleDef(styleDef, i);
+      if (seenNames.has(styleDef.name)) {
+        throw new ValidationError(
+          `BuildPlan.styles contains duplicate style name "${styleDef.name}"`
+        );
+      }
+      seenNames.add(styleDef.name);
+    });
+  }
+
+  // tree — required, root must be Section
+  if (plan.tree == null || typeof plan.tree !== 'object' || Array.isArray(plan.tree)) {
     throw new ValidationError('BuildPlan.tree is required and must be an object');
   }
-
   if (plan.tree.type !== 'Section') {
     throw new ValidationError(
       `BuildPlan.tree.type must be "Section", got ${JSON.stringify(plan.tree.type)}`
     );
   }
 
-  // Walk the tree, collecting validation errors
-  walkNode(plan.tree, [], 0);
+  // Full recursive walk — Section counts as depth 1 (matching extension)
+  walkNode(plan.tree, 'tree', 1);
 
   return plan;
-}
-
-function walkNode(node, ancestorTypes, depth) {
-  if (depth > 6) {
-    throw new ValidationError(
-      `BuildPlan nesting depth exceeds the maximum of 6 levels`
-    );
-  }
-
-  if (!node || typeof node !== 'object') {
-    throw new ValidationError('Tree node must be an object');
-  }
-
-  // className — if present, must be kebab-case
-  if (node.className !== undefined && node.className !== null) {
-    if (typeof node.className !== 'string') {
-      throw new ValidationError(
-        `Node className must be a string, got ${typeof node.className}`
-      );
-    }
-    if (node.className !== '' && !KEBAB_CASE_RE.test(node.className)) {
-      throw new ValidationError(
-        `Node className "${node.className}" must be kebab-case (e.g. "hero-section")`
-      );
-    }
-  }
-
-  // styles — check for shorthand CSS properties
-  if (node.styles && typeof node.styles === 'object') {
-    for (const key of Object.keys(node.styles)) {
-      if (SHORTHAND_PROPERTIES.has(key)) {
-        throw new ValidationError(
-          `Shorthand CSS property "${key}" is not allowed. Use longhand properties instead.`
-        );
-      }
-    }
-  }
-
-  const type = node.type;
-
-  // Heading level validation
-  if (type === 'Heading') {
-    const level = node.level;
-    if (!Number.isInteger(level) || level < 1 || level > 6) {
-      throw new ValidationError(
-        `Heading node requires a level between 1 and 6, got ${JSON.stringify(level)}`
-      );
-    }
-  }
-
-  // Link href validation
-  if (type === 'Link') {
-    if (!node.href || typeof node.href !== 'string' || node.href.trim() === '') {
-      throw new ValidationError('Link node requires a non-empty "href" string');
-    }
-  }
-
-  // Image src and alt validation
-  if (type === 'Image') {
-    if (!node.src || typeof node.src !== 'string' || node.src.trim() === '') {
-      throw new ValidationError('Image node requires a non-empty "src" string');
-    }
-    if (node.alt === undefined || node.alt === null || typeof node.alt !== 'string') {
-      throw new ValidationError(
-        'Image node requires an "alt" string (use empty string "" for decorative images)'
-      );
-    }
-  }
-
-  // Recurse into children
-  if (node.children) {
-    if (!Array.isArray(node.children)) {
-      throw new ValidationError('Node "children" must be an array');
-    }
-    for (const child of node.children) {
-      walkNode(child, [...ancestorTypes, type], depth + 1);
-    }
-  }
 }
 
 module.exports = { validateBuildPlan, ValidationError };

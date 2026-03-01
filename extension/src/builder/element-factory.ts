@@ -73,6 +73,50 @@ export async function buildTree(
   // Determine where to materialize this element.
   let el: DOMElement;
 
+  // DynamoWrapper uses its own preset and must not call setTag().
+  // Its children (from the BuildPlan) are appended into the auto-created DynamoItem.
+  if (node.type === 'DynamoWrapper') {
+    let wrapper: AnyElement;
+    if (depth === 0 && parent !== null) {
+      wrapper = await (parent as DOMElement).after(webflow.elementPresets.DynamoWrapper);
+    } else if (depth === 0) {
+      const root = await webflow.getRootElement();
+      if (!root) throw new Error('No element selected and getRootElement() returned null');
+      wrapper = await (root as DOMElement).append(webflow.elementPresets.DynamoWrapper);
+    } else {
+      wrapper = await (parent as DOMElement).append(webflow.elementPresets.DynamoWrapper);
+    }
+
+    // Apply style if present.
+    const wStyle = await webflow.getStyleByName(node.className);
+    if (wStyle) await (wrapper as any).setStyles([wStyle]);
+
+    // Find the DynamoItem inside the auto-created structure so children land in the right place.
+    const wChildren = await (wrapper as any).getChildren().catch(() => [] as AnyElement[]);
+    let itemParent: AnyElement = wrapper;
+    for (const child of wChildren) {
+      if (child.type === 'DynamoList') {
+        const listChildren = await (child as any).getChildren().catch(() => [] as AnyElement[]);
+        const item = listChildren.find((c: AnyElement) => c.type === 'DynamoItem');
+        if (item) { itemParent = item; break; }
+      }
+    }
+
+    onProgress?.(`[elements] Created DynamoWrapper .${node.className} (depth ${depth})`);
+
+    let count = 1;
+    for (const childNode of node.children ?? []) {
+      try {
+        const { count: cc } = await buildTree(childNode, itemParent, depth + 1, onProgress);
+        count += cc;
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        onProgress?.(`[elements] ERROR building .${childNode.className} inside DynamoItem: ${message}`);
+      }
+    }
+    return { element: wrapper as unknown as DOMElement, count };
+  }
+
   if (depth === 0) {
     if (parent !== null) {
       // Insert root section after the selected element.

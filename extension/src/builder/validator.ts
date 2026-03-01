@@ -19,7 +19,8 @@ export type ElementType =
   | 'TextLink'
   | 'LinkBlock'
   | 'Image'
-  | 'DOM';
+  | 'DOM'
+  | 'DynamoWrapper';
 
 export type LinkType = 'url' | 'page' | 'element' | 'email' | 'phone' | 'file';
 
@@ -74,6 +75,8 @@ export interface BuildPlan {
   pageId?: string;
   sectionName: string;
   order: number;
+  /** If set, the new section is inserted after this element ID. Fully headless — no selection needed. */
+  insertAfterElementId?: string;
   styles?: StyleDef[];
   tree: ElementNode;
 }
@@ -96,6 +99,8 @@ export class ValidationError extends Error {
 const VALID_ELEMENT_TYPES = new Set<string>([
   'Section', 'DivBlock', 'Container', 'Heading', 'Paragraph',
   'TextBlock', 'Button', 'TextLink', 'LinkBlock', 'Image', 'DOM',
+  // CMS collection list — children are appended inside the auto-created DynamoItem
+  'DynamoWrapper',
 ]);
 
 const TEXT_REQUIRED_TYPES = new Set<string>(['Paragraph', 'TextBlock', 'Button', 'TextLink']);
@@ -404,6 +409,9 @@ export function validate(plan: unknown): BuildPlan {
     ...(p['pageId'] !== undefined ? { pageId: p['pageId'] as string } : {}),
     sectionName: p['sectionName'] as string,
     order: p['order'] as number,
+    ...(p['insertAfterElementId'] !== undefined
+      ? { insertAfterElementId: p['insertAfterElementId'] as string }
+      : {}),
     styles,
     tree,
   };

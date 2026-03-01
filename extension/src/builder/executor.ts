@@ -48,7 +48,8 @@ function failResult(
  * Executes a BuildPlan end-to-end.
  *
  * 1. Validates the raw JSON input.
- * 2. Reads the currently selected element in the Designer as the insertion point.
+ * 2. Resolves the insertion point — from insertAfterElementId (headless) or
+ *    the currently selected element (legacy fallback).
  * 3. Creates all styles defined in the plan.
  * 4. Recursively builds the element tree.
  * 5. Returns a BuildResult with counts and elapsed time.
@@ -95,20 +96,37 @@ export async function executeBuildPlan(
   // ------------------------------------------------------------------
   let selectedEl: AnyElement | null = null;
   try {
-    selectedEl = await webflow.getSelectedElement();
-    if (selectedEl) {
-      onProgress?.('[executor] Insertion point: selected element in Designer');
+    if (plan.insertAfterElementId) {
+      // Deterministic: look up by element ID — no selection dependency.
+      const allElements = await webflow.getAllElements().catch(() => [] as AnyElement[]);
+      const target = allElements.find(
+        (el) => (el.id as { element?: string })?.element === plan.insertAfterElementId,
+      ) ?? null;
+      if (target) {
+        selectedEl = target;
+        onProgress?.(`[executor] Insertion point: element ${plan.insertAfterElementId}`);
+      } else {
+        onProgress?.(
+          `[executor] Warning: insertAfterElementId "${plan.insertAfterElementId}" not found ` +
+          '— falling back to page root.',
+        );
+      }
     } else {
-      onProgress?.(
-        '[executor] No element selected — section will be created unattached. ' +
-        'Select an element before running to control placement.',
-      );
+      // Legacy: use the element currently selected in the Designer.
+      selectedEl = await webflow.getSelectedElement();
+      if (selectedEl) {
+        onProgress?.('[executor] Insertion point: selected element in Designer');
+      } else {
+        onProgress?.(
+          '[executor] No element selected — section will be appended to page root.',
+        );
+      }
     }
   } catch (err) {
     // Non-fatal: proceed without an insertion point.
     const message = err instanceof Error ? err.message : String(err);
-    console.warn(`[executor] Could not read selected element: ${message}`);
-    onProgress?.(`[executor] Warning: could not read selected element — ${message}`);
+    console.warn(`[executor] Could not resolve insertion point: ${message}`);
+    onProgress?.(`[executor] Warning: could not resolve insertion point — ${message}`);
   }
 
   // ------------------------------------------------------------------

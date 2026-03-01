@@ -20,6 +20,7 @@ const { z } = require('zod');
 
 const SiteRegistry = require('./lib/site-registry');
 const { validateBuildPlan, ValidationError } = require('./lib/validator');
+const { writeToClipboard } = require('./lib/clipboard');
 
 // --- Config resolution -----------------------------------------------
 // Same priority order as the HTTP server.
@@ -75,8 +76,12 @@ async function main() {
       plan: z
         .record(z.any())
         .describe('The complete BuildPlan object'),
+      wait: z
+        .boolean()
+        .optional()
+        .describe('If true, poll until the build completes and return the result. Default: false.'),
     },
-    async ({ plan }) => {
+    async ({ plan, wait = false }) => {
       try {
         validateBuildPlan(plan);
       } catch (e) {
@@ -112,13 +117,61 @@ async function main() {
         return fail(`Failed to write to queue: ${e.message}`);
       }
 
-      return ok({
-        itemId: item.id,
-        status: item.status || 'pending',
-        siteId: plan.siteId,
-        sectionName: plan.sectionName,
-        order,
-      });
+      if (!wait) {
+        return ok({
+          itemId: item.id,
+          status: item.status || 'pending',
+          siteId: plan.siteId,
+          sectionName: plan.sectionName,
+          order,
+        });
+      }
+
+      // Poll via the relay HTTP endpoint (sees in-memory overrides + buildStats)
+      // rather than the CMS directly.
+      const relayUrl = registry.relayUrl;
+      const statusUrl = `${relayUrl}/status/${item.id}?siteId=${encodeURIComponent(plan.siteId)}`;
+
+      const TIMEOUT_MS = 90_000;
+      const POLL_INTERVAL_MS = 2_000;
+      const deadline = Date.now() + TIMEOUT_MS;
+
+      while (Date.now() < deadline) {
+        await new Promise(r => setTimeout(r, POLL_INTERVAL_MS));
+        let built;
+        try {
+          const res = await fetch(statusUrl);
+          if (!res.ok) continue;
+          built = await res.json();
+        } catch (_) {
+          continue;
+        }
+        if (built.status === 'done') {
+          // Auto-cleanup: remove from queue now that it's built successfully.
+          try { await client.deleteItem(built.id); } catch (_) {}
+          return ok({
+            status: 'done',
+            siteId: plan.siteId,
+            sectionName: plan.sectionName,
+            sectionClass: plan.tree?.className ?? null,
+            order,
+            ...(built.buildStats ? { buildStats: built.buildStats } : {}),
+            next: 'Call get_page_snapshot to verify the section is on canvas, then queue the next section.',
+          });
+        }
+        if (built.status === 'error') {
+          // Keep errored items in the queue for inspection.
+          return fail(
+            `Build failed for "${plan.sectionName}": ${built.errorMessage || 'unknown error'}\n` +
+            `Fix the plan and re-queue. The failed item (${built.id}) remains in the queue for inspection.`
+          );
+        }
+      }
+
+      return fail(
+        `Build timed out after ${TIMEOUT_MS / 1000}s — the Designer Extension may not be open or connected.\n` +
+        `itemId: ${item.id} — check status with get_queue_status, then clear it and re-queue once the Extension is ready.`
+      );
     }
   );
 
@@ -159,11 +212,13 @@ async function main() {
   // ── clear_queue ───────────────────────────────────────────────────
   server.tool(
     'clear_queue',
-    'Remove all completed (done) and failed (error) items from the build queue for a site.',
+    'Remove items from the build queue. By default removes only completed (done) and failed (error) items. ' +
+    'Set all=true to remove every item including pending ones.',
     {
       siteId: z.string().describe('The Webflow site ID'),
+      all: z.boolean().optional().describe('If true, remove all items including pending. Default: false.'),
     },
-    async ({ siteId }) => {
+    async ({ siteId, all = false }) => {
       let client;
       try {
         client = registry.getClient(siteId);
@@ -178,8 +233,13 @@ async function main() {
         return fail(`Failed to fetch queue: ${e.message}`);
       }
 
-      const clearable = items.filter((i) => i.status === 'done' || i.status === 'error');
-      if (clearable.length === 0) return ok('Queue already clean — no completed items to remove.');
+      const clearable = all
+        ? items
+        : items.filter((i) => i.status === 'done' || i.status === 'error');
+
+      if (clearable.length === 0) {
+        return ok(all ? 'Queue is already empty.' : 'Nothing to clear — no completed or failed items.');
+      }
 
       const results = await Promise.allSettled(clearable.map((i) => client.deleteItem(i.id)));
       const cleared = results.filter((r) => r.status === 'fulfilled').length;
@@ -187,8 +247,8 @@ async function main() {
 
       return ok(
         failed > 0
-          ? `Cleared ${cleared} items. ${failed} failed to delete.`
-          : `Cleared ${cleared} items.`
+          ? `Cleared ${cleared} item(s). ${failed} failed to delete.`
+          : `Cleared ${cleared} item(s).`
       );
     }
   );
@@ -424,6 +484,125 @@ async function main() {
       if (error) return fail(error);
       const pageLabel = snapshot.pageInfo?.name ? `Page: ${snapshot.pageInfo.name}\n\n` : '';
       return ok(`${pageLabel}${snapshot.summary}`);
+    }
+  );
+
+  // ── Delete helper ─────────────────────────────────────────────────
+  async function requestDelete(siteId, body) {
+    const relayUrl = registry.relayUrl;
+
+    let reqRes;
+    try {
+      reqRes = await fetch(
+        `${relayUrl}/delete/request?siteId=${encodeURIComponent(siteId)}`,
+        { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }
+      );
+    } catch (e) {
+      return { error: `Cannot reach relay at ${relayUrl}. Run 'plinth dev' first.` };
+    }
+    if (!reqRes.ok) return { error: `Relay returned ${reqRes.status} for delete request.` };
+
+    // Poll up to 30 s for completion
+    const deadline = Date.now() + 30_000;
+    while (Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 2000));
+      try {
+        const doneRes = await fetch(
+          `${relayUrl}/delete/done?siteId=${encodeURIComponent(siteId)}`
+        );
+        if (doneRes.ok) return { result: await doneRes.json() };
+      } catch { /* keep polling */ }
+    }
+
+    return { error: 'Delete timed out after 30 s. Make sure the Designer Extension is open.' };
+  }
+
+  // ── delete_elements ───────────────────────────────────────────────
+  server.tool(
+    'delete_elements',
+    'Delete specific elements from the Webflow canvas by their IDs. ' +
+    'Get element IDs from get_page_snapshot — they appear as Type#id .class in the output. ' +
+    'Requires the Designer Extension to be open.',
+    {
+      siteId:     z.string().describe('The Webflow site ID'),
+      elementIds: z.array(z.string()).describe('Element IDs to delete (from get_page_snapshot)'),
+    },
+    async ({ siteId, elementIds }) => {
+      const { result, error } = await requestDelete(siteId, { elementIds });
+      if (error) return fail(error);
+      return ok(
+        result.errors.length
+          ? `Deleted ${result.deleted} element(s). Errors: ${result.errors.join('; ')}`
+          : `Deleted ${result.deleted} element(s).`
+      );
+    }
+  );
+
+  // ── delete_section ────────────────────────────────────────────────
+  server.tool(
+    'delete_section',
+    'Delete all Section elements on the canvas that have a given CSS class name. ' +
+    'Use this to remove a previously built section before rebuilding it. ' +
+    'The class name should match what appears in get_page_snapshot output (e.g. "hero-section"). ' +
+    'Requires the Designer Extension to be open.',
+    {
+      siteId:       z.string().describe('The Webflow site ID'),
+      sectionClass: z.string().describe('CSS class name of the section(s) to delete'),
+    },
+    async ({ siteId, sectionClass }) => {
+      const { result, error } = await requestDelete(siteId, { sectionClass });
+      if (error) return fail(error);
+      return ok(
+        result.errors.length
+          ? `Deleted ${result.deleted} section(s). Errors: ${result.errors.join('; ')}`
+          : `Deleted ${result.deleted} section(s) with class "${sectionClass}".`
+      );
+    }
+  );
+
+  // ── copy_to_webflow ───────────────────────────────────────────────
+  server.tool(
+    'copy_to_webflow',
+    'Copy a @webflow/XscpData payload to the system clipboard so it can be pasted ' +
+    'directly into the Webflow Designer with Ctrl+V / Cmd+V. ' +
+    'Generate the payload using the @webflow/XscpData format: ' +
+    '{ type: "@webflow/XscpData", payload: { nodes: [...], styles: [...], assets: [], ix1: [], ix2: {...} }, meta: {...} }. ' +
+    'Node types: Section, Block (div), Heading, Paragraph, Link. ' +
+    'Styles use a "styleLess" CSS string (shorthand is fine here). ' +
+    'Returns a prompt to paste in the Designer.',
+    {
+      payload: z
+        .record(z.any())
+        .describe('The complete @webflow/XscpData object to copy to clipboard'),
+    },
+    async ({ payload }) => {
+      // Basic validation
+      if (payload.type !== '@webflow/XscpData') {
+        return fail('payload.type must be "@webflow/XscpData"');
+      }
+      if (!payload.payload?.nodes || !Array.isArray(payload.payload.nodes)) {
+        return fail('payload.payload.nodes must be an array');
+      }
+      if (!payload.payload?.styles || !Array.isArray(payload.payload.styles)) {
+        return fail('payload.payload.styles must be an array');
+      }
+
+      const json = JSON.stringify(payload);
+
+      let method;
+      try {
+        ({ method } = writeToClipboard(json, 'application/json'));
+      } catch (e) {
+        return fail(`Clipboard write failed: ${e.message}`);
+      }
+
+      const nodeCount  = payload.payload.nodes.length;
+      const styleCount = payload.payload.styles.length;
+
+      return ok(
+        `Copied to clipboard via ${method} (${nodeCount} nodes, ${styleCount} styles).\n` +
+        `Switch to Webflow Designer and press Ctrl+V (or Cmd+V) to paste.`,
+      );
     }
   );
 

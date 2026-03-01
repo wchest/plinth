@@ -38,6 +38,7 @@ router.get('/pending', (req, res) => {
   const ts = pending.get(siteId);
   const isPending = !!ts && (Date.now() - ts) < REQUEST_TTL_MS;
   if (!isPending) pending.delete(siteId);
+  res.set('Cache-Control', 'no-store');
   res.json({ pending: isPending });
 });
 

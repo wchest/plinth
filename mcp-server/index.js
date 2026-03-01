@@ -3,10 +3,20 @@
 require('dotenv').config();
 
 const path = require('path');
+const fs   = require('fs');
 const express = require('express');
 const cors = require('cors');
 
 const { version } = require('../package.json');
+
+const LOG_FILE  = path.join(require('os').tmpdir(), 'plinth-relay.log');
+const logStream = fs.createWriteStream(LOG_FILE, { flags: 'a' });
+
+function writeLog(line) {
+  const ts = new Date().toISOString().slice(11, 23); // HH:MM:SS.mmm
+  const stripped = line.replace(/\x1b\[[0-9;]*m/g, ''); // strip ANSI
+  logStream.write(`[${ts}] ${stripped}\n`);
+}
 
 const c = {
   reset:  '\x1b[0m',
@@ -24,6 +34,7 @@ const queueRouter    = require('./routes/queue');
 const statusRouter   = require('./routes/status');
 const healthRouter   = require('./routes/health');
 const snapshotRouter = require('./routes/snapshot');
+const deleteRouter   = require('./routes/delete');
 
 // --- Config path resolution -------------------------------------------
 //
@@ -35,8 +46,6 @@ const snapshotRouter = require('./routes/snapshot');
 // This means:
 //   cd ~/projects/my-site && PLINTH_CONFIG=.plinth.json npm --prefix ~/plinth/mcp-server start
 //   — or just drop a .plinth.json in the project repo and point PLINTH_CONFIG at it.
-
-const fs = require('fs');
 
 function resolveConfigPath() {
   if (process.env.PLINTH_CONFIG) {
@@ -69,12 +78,33 @@ try {
 }
 app.locals.siteRegistry = registry;
 
+// --- Request logging --------------------------------------------------
+
+app.use((req, res, next) => {
+  const start  = Date.now();
+  const method = req.method;
+  const path   = req.path; // capture before Express rewrites it for sub-routers
+  res.on('finish', () => {
+    // Skip noisy heartbeat polls
+    if (res.statusCode === 200 && (path === '/snapshot/pending' || path === '/delete/pending')) return;
+    const ms = Date.now() - start;
+    const qs = req.query && Object.keys(req.query).length
+      ? '?' + new URLSearchParams(req.query).toString() : '';
+    const color = res.statusCode >= 400 ? c.red : c.dim;
+    const line = `  ${method} ${path}${qs} → ${res.statusCode} ${ms}ms`;
+    process.stdout.write(`${color}${line}${c.reset}\n`);
+    writeLog(line);
+  });
+  next();
+});
+
 // --- Routes -----------------------------------------------------------
 
 app.use('/queue',    queueRouter);
 app.use('/status',   statusRouter);
 app.use('/health',   healthRouter);
 app.use('/snapshot', snapshotRouter);
+app.use('/delete',   deleteRouter);
 
 // --- 404 handler ------------------------------------------------------
 
@@ -102,7 +132,9 @@ async function start() {
 
   await new Promise((resolve) => {
     app.listen(PORT, '127.0.0.1', () => {
-      console.log(ok(`Relay listening on http://localhost:${PORT}`));
+      const msg = ok(`Relay listening on http://localhost:${PORT}`);
+      console.log(msg);
+      writeLog(`=== plinth relay started on :${PORT} === log: ${LOG_FILE}`);
       resolve();
     });
   });

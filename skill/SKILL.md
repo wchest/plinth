@@ -14,6 +14,7 @@ A BuildPlan is a JSON document describing **one section** of a Webflow page. Cla
   "siteId": "your-site-id",
   "sectionName": "hero",
   "order": 1,
+  "insertAfterElementId": "abc123",
   "styles": [...],
   "tree": {
     "type": "Section",
@@ -24,6 +25,12 @@ A BuildPlan is a JSON document describing **one section** of a Webflow page. Cla
 ```
 
 **One BuildPlan = one Section element as the root.**
+
+### `insertAfterElementId` (optional but recommended)
+
+Set this to the Designer element ID of the section the new section should appear **after**. The extension looks it up by ID — fully headless, no manual selection in the Designer required.
+
+Get element IDs from `get_page_dom` (the `id` field on each node returned by the tool). Omit the field to fall back to the currently selected element, or the page root if nothing is selected.
 
 ---
 
@@ -64,12 +71,175 @@ A BuildPlan is a JSON document describing **one section** of a Webflow page. Cla
 | `LinkBlock` | Link Block | className, href | Clickable container |
 | `Image` | Image | className, src, alt | |
 | `DOM` | Custom tag | className, domTag | For `span`, `em`, etc. |
+| `DynamoWrapper` | Collection List Wrapper | className | Root of a CMS list |
+| `DynamoList` | Collection List | className | Child of DynamoWrapper |
+| `DynamoItem` | Collection Item | className | One item template |
+| `DynamoEmpty` | Empty State | className, text | Shown when list is empty |
+
+---
+
+## Design Decisions
+
+### CMS Collections vs Embedded Text
+
+**CMS is a content management tool, not an architectural requirement.** Use it when the content changes frequently, has structure that repeats at scale, or needs to be editable by non-developers. Don't use it just because it feels more "proper."
+
+Use **CMS** (DynamoWrapper) when:
+- Content genuinely repeats at scale — blog posts, news, events, staff directory, programs, courses
+- Non-developers need to add/edit/remove items without touching the Designer
+- Content drives collection template pages
+
+Use **embedded static text** when:
+- Content is marketing copy that a developer will update anyway — hero, stats bar, approach, CTA, footer
+- The section has a small fixed number of items that rarely change
+- There's no client need to manage it through the CMS UI
+
+**The edge case — small repeating sections (e.g. a quote carousel, a stats bar):**
+- 3–4 fixed items that change twice a year → static, simpler, no overhead
+- Client wants to rotate items without touching the Designer → CMS
+- A collection already exists with the right data → probably worth wiring up
+
+**Rule of thumb:** if the content would appear in a spreadsheet with 5+ rows and non-developers need to manage it, use CMS. Otherwise, static is fine.
+
+### Styles
+
+- Create a **named style** for every visual class — Webflow has no inline styles
+- Reuse existing styles rather than creating near-duplicates (check `get_page_snapshot` or `list_styles` first)
+- Name styles for their **role**, not their appearance: `btn-primary` not `blue-button`, `section-alt` not `grey-background`
+- For variants, use combo classes: define `Card` as the base, `Card--Featured` as the modifier — but note that BuildPlan only supports a single `className` per element, so model variants as separate style definitions that include both the base and modifier properties
+
+### Webflow Variables
+
+Variables are CSS custom properties scoped to the site. Use them for design tokens — brand colors, spacing scales, font sizes — that appear across many styles. If the project has variables defined, reference them in style property values using `var(--variable-name)`. Don't try to define variables in a BuildPlan; create them in Designer first, then reference them by their binding string.
+
+### CMS Bindings
+
+There are two levels of CMS integration, and only the first is automatable:
+
+**1. Collection List structure (automatable)** — A `DynamoWrapper` element placed on a page references a CMS collection and loops over its items. BuildPlan supports `DynamoWrapper`, `DynamoList`, and `DynamoItem` element types. When built on a Collection Template page, Webflow wires the list to the page's collection automatically.
+
+**2. Field-level binding (manual only)** — Connecting a specific text or image element inside a `DynamoItem` to a specific CMS field (e.g. `quote-text` → "Body" field) cannot be done via any API — Designer Extension or Data API. This step must be done manually in the Designer after the structure is built.
+
+**Workflow for CMS-driven sections:**
+- Use `DynamoWrapper` → `DynamoList` → `DynamoItem` in the BuildPlan tree to create the collection list structure
+- Inside `DynamoItem`, build the card/item layout with realistic placeholder text
+- Name elements clearly to match their intended field (e.g. `quote-text`, `quote-author`, `quote-avatar`)
+- Note in your response exactly which elements need field bindings and to which collection fields
+
+**Manual field binding steps (done in Designer after build):**
+
+The element must be inside a `DynamoItem` for binding to be available.
+
+- **Text** (Heading, Paragraph, Text Block): click element → right sidebar Settings panel → purple binding icon next to the text field → select collection field
+- **Image**: click image → Settings → "Get image from" → select Image field
+- **Link/Button**: click element → link settings → "Get URL from field" → select Link/URL field
+- **Shortcut**: right-click any element inside a Collection Item → "Connect to field"
+
+Once bound, the Designer previews real content from the first CMS item. Bindings persist permanently in the saved site.
+
+### Components
+
+Components are reusable element trees. BuildPlan builds raw elements, not component instances — the Designer Extension API doesn't support creating or instantiating components. If a pattern repeats (e.g. a 3-card grid), build it as a static tree and note which element should be converted to a component in Designer afterwards.
+
+### Nesting and Semantics
+
+- Prefer semantic structure: `Section > Container > DivBlock` for sections, not nested divs all the way down
+- Use `Heading` with the correct `headingLevel` for SEO hierarchy — one `h1` per page, `h2` for section titles, `h3` for card titles
+- Use `Paragraph` for body copy, `TextBlock` for short labels or captions
 
 ---
 
 ## Design Tokens
 
 Read the project's design system doc before generating plans. It will define colors, fonts, spacing, and any existing styles that should be referenced but not recreated.
+
+---
+
+## Webflow Clipboard Format (`@webflow/XscpData`)
+
+An alternative to BuildPlan for sections that need CMS bindings, or for faster one-shot insertion. Generate the JSON and call `copy_to_webflow` — the user pastes with Ctrl+V in the Designer.
+
+### Structure
+
+```json
+{
+  "type": "@webflow/XscpData",
+  "payload": {
+    "nodes": [ ...element nodes... ],
+    "styles": [ ...style objects... ],
+    "assets": [],
+    "ix1": [],
+    "ix2": { "interactions": [], "events": [], "actionLists": [] }
+  },
+  "meta": {
+    "unlinkedSymbolCount": 0,
+    "droppedLinks": 0,
+    "dynBindRemovedCount": 0,
+    "dynListBindRemovedCount": 0,
+    "paginationRemovedCount": 0
+  }
+}
+```
+
+### Element nodes
+
+Every element node:
+```json
+{ "_id": "uuid", "tag": "div", "classes": ["style-uuid"], "children": ["child-uuid"], "type": "Block", "data": { "tag": "div", "text": false } }
+```
+
+Text content is a **child text node** (not a field):
+```json
+{ "_id": "uuid", "text": true, "v": "The text content" }
+```
+
+| Element | `tag` | `type` | Notes |
+|---------|-------|--------|-------|
+| Section | `section` | `Section` | |
+| Div | `div` | `Block` | |
+| Heading | `h1`–`h6` | `Heading` | `data.tag` must match |
+| Paragraph | `p` | `Paragraph` | |
+| Link/Button | `a` | `Link` | add `data.link: { url, target }` |
+| Image | `img` | `Image` | add `data.attr: { src, alt }` |
+
+### Style objects
+
+```json
+{ "_id": "uuid", "fake": false, "type": "class", "name": "My Style Name", "namespace": "", "comb": "", "styleLess": "padding-top: 48px; background-color: rgb(45,74,62);", "variants": {}, "children": [], "selector": null }
+```
+
+- `styleLess` is a raw CSS string — shorthand properties are fine here (unlike BuildPlan)
+- Styles are referenced by UUID in the node `classes` array
+- Style names can be any string (spaces allowed, unlike BuildPlan classNames)
+
+### Helper pattern
+
+```javascript
+function uuid() { return crypto.randomUUID(); }
+
+// Create a style, return id + style object
+function style(name, css) {
+  const id = uuid();
+  return { id, style: { _id: id, fake: false, type: "class", name, namespace: "", comb: "",
+    styleLess: css, variants: {}, children: [], selector: null } };
+}
+
+// Create a div node
+function div(classIds, childIds) {
+  const id = uuid();
+  return { id, node: { _id: id, tag: "div", classes: classIds, children: childIds,
+    type: "Block", data: { tag: "div", text: false } } };
+}
+```
+
+### When to use clipboard vs BuildPlan
+
+| Situation | Use |
+|-----------|-----|
+| Static section (hero, stats, CTA) | Either — BuildPlan is headless; clipboard is instant |
+| CMS Collection List with field bindings | Clipboard (BuildPlan can create the structure but not bind fields) |
+| Needs to run unattended / queued | BuildPlan |
+| One-off paste, user is at the Designer | Clipboard |
 
 ---
 
@@ -93,14 +263,45 @@ Returns queue state: pending plans, in-progress, completed, errors.
 
 ---
 
-## Workflow
+## Build Loop (one section at a time)
 
-1. Generate a BuildPlan JSON for one section
-2. Save it (e.g. `skill/examples/my-section.json`)
-3. POST to `http://localhost:3847/queue`
-4. Check `http://localhost:3847/status` — wait for `completed`
-5. Verify in Webflow Designer
-6. Fix any issues and re-POST (the extension handles duplicate style names gracefully — it skips existing ones)
+**Always build one section at a time.** This is not just a preference — `insertAfterElementId` for section N+1 comes from the element ID of section N, which you only know after it's built and verified. Queuing multiple sections upfront loses ordering control.
+
+### For each section:
+
+**1. Orient**
+```
+get_queue_status(siteId)      — see what's pending/errored
+get_page_snapshot(siteId)     — see what's already on canvas + element IDs
+```
+
+**2. Queue and build**
+```
+queue_buildplan(plan, wait=true)
+```
+- `wait=true` blocks until the extension picks it up and builds. Do not proceed until it returns.
+- On **error**: the exact error message is returned. Fix the plan and re-queue. The failed item stays in the queue for inspection — clear it with `clear_queue` before re-queuing.
+- On **success**: returns `{ sectionClass, buildStats: { elementsCreated, stylesCreated, elapsedMs } }`. The item is automatically removed from the queue.
+
+**3. Verify**
+```
+get_page_snapshot(siteId)
+```
+Find `Section#<elementId> .{sectionClass}` in the output. Confirm the structure looks right. The `elementId` is what you'll use for the next section's `insertAfterElementId`.
+
+**4. Next section**
+Set `insertAfterElementId` to the element ID found in step 3. Generate the next plan. Repeat from step 2.
+
+### Common errors and fixes
+
+| Error | Fix |
+|-------|-----|
+| `element tree exceeds maximum nesting depth of 6 levels` | Flatten a wrapper div — merge its styles into its parent |
+| `shorthand CSS property "X" is not allowed` | Replace with longhand: `padding` → `padding-top/right/bottom/left` |
+| `Heading element requires headingLevel` | Add `"headingLevel": 2` to the Heading node |
+| `Button element requires a non-empty "href"` | Add `"href": "#"` or a real URL |
+| `User does not have permission to make changes` | The Designer Extension isn't open or the user isn't on the right page |
+| Build times out | Extension not open, or not connected to the site |
 
 ---
 

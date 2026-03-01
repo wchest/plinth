@@ -27,17 +27,24 @@ export async function getQueueItem(siteId: string, itemId: string, relayUrl: str
   return res.json();
 }
 
+export interface BuildStats {
+  elementsCreated: number;
+  stylesCreated: number;
+  elapsedMs: number;
+}
+
 export async function setItemStatus(
   siteId: string,
   itemId: string,
   status: QueueStatus,
   relayUrl: string,
   errorMessage?: string,
+  buildStats?: BuildStats,
 ): Promise<void> {
   const res = await fetch(`${relayUrl}/status/${itemId}?siteId=${encodeURIComponent(siteId)}`, {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ status, errorMessage }),
+    body: JSON.stringify({ status, errorMessage, buildStats }),
   });
   if (!res.ok) {
     const body = await res.text();

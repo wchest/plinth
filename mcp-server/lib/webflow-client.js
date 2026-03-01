@@ -83,11 +83,18 @@ class WebflowClient {
 
   _mapItem(item) {
     const fd = item.fieldData || {};
+    const rawStatus = fd.status || '';
+    const normalizedStatus = rawStatus.toLowerCase();
+    const knownStatuses = ['pending', 'building', 'done', 'error'];
+    const status = knownStatuses.includes(normalizedStatus) ? normalizedStatus : 'pending';
+    if (rawStatus && !knownStatuses.includes(normalizedStatus)) {
+      console.warn(`[webflow-client] Unknown status value: "${rawStatus}" for item ${item.id} — treating as pending`);
+    }
     return {
       id: item.id,
       name: fd.name || fd['name'] || '',
       plan: fd.plan || '',
-      status: fd.status || 'pending',
+      status,
       errorMessage: fd['error-message'] || '',
       order: fd.order != null ? fd.order : 0,
     };
