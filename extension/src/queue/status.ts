@@ -33,6 +33,22 @@ export interface BuildStats {
   elapsedMs: number;
 }
 
+/**
+ * Post a single log message to the relay's in-memory log buffer.
+ * Fire-and-forget — log failures never affect builds.
+ */
+export function postLog(
+  itemId: string,
+  message: string,
+  relayUrl: string,
+): void {
+  fetch(`${relayUrl}/log/${itemId}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ message }),
+  }).catch(() => {});
+}
+
 export async function setItemStatus(
   siteId: string,
   itemId: string,

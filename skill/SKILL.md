@@ -283,11 +283,17 @@ queue_buildplan(plan, wait=true)
 - On **error**: the exact error message is returned. Fix the plan and re-queue. The failed item stays in the queue for inspection — clear it with `clear_queue` before re-queuing.
 - On **success**: returns `{ sectionClass, buildStats: { elementsCreated, stylesCreated, elapsedMs } }`. The item is automatically removed from the queue.
 
-**3. Verify**
+**3. Verify — mandatory after every build**
 ```
 get_page_snapshot(siteId)
 ```
-Find `Section#<elementId> .{sectionClass}` in the output. Confirm the structure looks right. The `elementId` is what you'll use for the next section's `insertAfterElementId`.
+You MUST call this after every successful build. Check:
+- `Section#<elementId> .{sectionClass}` appears in the output
+- The element count matches `buildStats.elementsCreated`
+- Key child elements (headings, buttons, images) are present with the right class names
+- No unexpected extra sections exist (watch for accidental duplicates)
+
+The `elementId` from the Section line is what you'll pass as `insertAfterElementId` for the next section.
 
 **4. Next section**
 Set `insertAfterElementId` to the element ID found in step 3. Generate the next plan. Repeat from step 2.
@@ -302,6 +308,81 @@ Set `insertAfterElementId` to the element ID found in step 3. Generate the next 
 | `Button element requires a non-empty "href"` | Add `"href": "#"` or a real URL |
 | `User does not have permission to make changes` | The Designer Extension isn't open or the user isn't on the right page |
 | Build times out | Extension not open, or not connected to the site |
+
+---
+
+## Editing Existing Sections
+
+There are three ways to edit content already on canvas. Use the simplest one that fits the task.
+
+### 1. Style-only updates — `update_styles`
+
+Change CSS properties on existing named styles without touching the element tree.
+
+```
+update_styles(siteId, [{ name, properties, breakpoints?, pseudo? }])
+```
+
+- `name`: must be an existing Webflow style name (kebab-case)
+- `properties`: longhand CSS only (same rules as BuildPlan)
+- Returns how many styles were updated
+
+**Use when:** tweaking colors, spacing, typography, hover states on an already-built section.
+
+---
+
+### 2. Content-only updates — `update_content`
+
+Patch text, links, or attributes on elements by their CSS class.
+
+```
+update_content(siteId, [{ className, text?, href?, src?, alt?, attributes? }])
+```
+
+- `className`: targets ALL elements on the canvas with that class
+- Any field can be omitted — only specified fields are updated
+- Returns how many elements were patched
+
+**Use when:** fixing copy, updating a CTA link, swapping an image — without rebuilding the DOM.
+
+---
+
+### 3. Full section replacement — `replacesSectionClass`
+
+Replace an existing section atomically: find it by class, remove it, build the new version in the same position.
+
+Add `replacesSectionClass` to the BuildPlan root:
+
+```json
+{
+  "version": "1.0",
+  "siteId": "...",
+  "sectionName": "hero",
+  "order": 1,
+  "replacesSectionClass": "hero-section",
+  "styles": [...],
+  "tree": { "type": "Section", "className": "hero-section", ... }
+}
+```
+
+- The extension finds the section with class `hero-section`, captures the element before it as the insertion anchor, removes it, then builds the new tree in that exact position
+- Styles in the plan are **upserted** (existing styles are updated rather than skipped)
+- If no section with that class is found, the new section is built at the end of the page
+
+**Use when:** structural changes are needed — adding/removing elements, changing nesting — that can't be done with style or content patches alone.
+
+---
+
+### Decision guide
+
+| What changed | Use |
+|---|---|
+| Only CSS (colors, sizes, spacing) | `update_styles` |
+| Only text, links, or attributes | `update_content` |
+| Structure, nesting, or element types | `replacesSectionClass` in BuildPlan |
+| First time building a section | `queue_buildplan` (no `replacesSectionClass`) |
+
+After any edit, call `get_page_snapshot` to verify the changes took effect.
 
 ---
 

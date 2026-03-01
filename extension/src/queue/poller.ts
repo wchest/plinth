@@ -1,6 +1,8 @@
 import { executeBuildPlan, BuildResult } from '../builder/executor';
-import { getQueueItems, getQueueItem, setItemStatus, QueueItem } from './status';
+import { getQueueItems, getQueueItem, setItemStatus, postLog, QueueItem } from './status';
 import { checkAndSendSnapshot } from './snapshot';
+import { checkAndSendDelete } from './delete';
+import { checkAndSendUpdates } from './updates';
 
 export interface PollerConfig {
   siteId: string;
@@ -43,8 +45,10 @@ export class BuildQueuePoller {
   async processNext(): Promise<void> {
     const { siteId, relayUrl } = this.config;
 
-    // Check for pending DOM snapshot requests (for get_page_dom / list_styles MCP tools)
+    // Check for pending requests from MCP tools that use the extension.
     await checkAndSendSnapshot(siteId, relayUrl);
+    await checkAndSendDelete(siteId, relayUrl);
+    await checkAndSendUpdates(siteId, relayUrl);
 
     let items: QueueItem[];
     try {
@@ -87,7 +91,9 @@ export class BuildQueuePoller {
         throw new Error(`Failed to parse BuildPlan JSON for "${item.name}": invalid JSON`);
       }
 
-      const result = await executeBuildPlan(plan);
+      const result = await executeBuildPlan(plan, (msg) => {
+        postLog(item.id, msg, relayUrl);
+      });
 
       if (!result.success) {
         throw new Error(result.error ?? 'Build failed with no error message');
@@ -99,6 +105,12 @@ export class BuildQueuePoller {
         elapsedMs: result.elapsedMs,
       });
       this.config.onBuildComplete?.({ ...updatedItem, status: 'done' }, result);
+
+      // Remove from queue — status is preserved in relay's in-memory store
+      // so any active MCP poller can still read the 'done' status.
+      fetch(`${relayUrl}/queue/${item.id}?siteId=${encodeURIComponent(siteId)}`, {
+        method: 'DELETE',
+      }).catch(() => {});
     } catch (err) {
       const error = err instanceof Error ? err : new Error(String(err));
       try {

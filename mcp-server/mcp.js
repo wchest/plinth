@@ -146,23 +146,34 @@ async function main() {
         } catch (_) {
           continue;
         }
-        if (built.status === 'done') {
-          // Auto-cleanup: remove from queue now that it's built successfully.
-          try { await client.deleteItem(built.id); } catch (_) {}
-          return ok({
-            status: 'done',
-            siteId: plan.siteId,
-            sectionName: plan.sectionName,
-            sectionClass: plan.tree?.className ?? null,
-            order,
-            ...(built.buildStats ? { buildStats: built.buildStats } : {}),
-            next: 'Call get_page_snapshot to verify the section is on canvas, then queue the next section.',
-          });
-        }
-        if (built.status === 'error') {
-          // Keep errored items in the queue for inspection.
+        if (built.status === 'done' || built.status === 'error') {
+          // Fetch build log before cleanup
+          let buildLog = [];
+          try {
+            const logRes = await fetch(`${relayUrl}/log/${built.id}`);
+            if (logRes.ok) buildLog = (await logRes.json()).messages ?? [];
+          } catch (_) {}
+
+          if (built.status === 'done') {
+            // Auto-cleanup
+            try { await client.deleteItem(built.id); } catch (_) {}
+            try { await fetch(`${relayUrl}/log/${built.id}`, { method: 'DELETE' }); } catch (_) {}
+            return ok({
+              status: 'done',
+              siteId: plan.siteId,
+              sectionName: plan.sectionName,
+              sectionClass: plan.tree?.className ?? null,
+              order,
+              ...(built.buildStats ? { buildStats: built.buildStats } : {}),
+              log: buildLog,
+              next: 'Call get_page_snapshot to verify the section is on canvas, then queue the next section.',
+            });
+          }
+
+          // error — keep item in queue for inspection
           return fail(
-            `Build failed for "${plan.sectionName}": ${built.errorMessage || 'unknown error'}\n` +
+            `Build failed for "${plan.sectionName}": ${built.errorMessage || 'unknown error'}\n\n` +
+            `Build log:\n${buildLog.map(m => `  ${m}`).join('\n') || '  (no log entries)'}\n\n` +
             `Fix the plan and re-queue. The failed item (${built.id}) remains in the queue for inspection.`
           );
         }
@@ -206,6 +217,31 @@ async function main() {
             ...(errorMessage ? { errorMessage } : {}),
           }))
       );
+    }
+  );
+
+  // ── get_build_log ─────────────────────────────────────────────────
+  server.tool(
+    'get_build_log',
+    'Retrieve the build log for a specific queue item. Returns all progress messages ' +
+    'emitted by the Designer Extension during the build — element creation, style creation, ' +
+    'warnings, and errors. Useful for diagnosing a failed build without waiting for wait=true.',
+    {
+      itemId: z.string().describe('The queue item ID (from get_queue_status)'),
+    },
+    async ({ itemId }) => {
+      const relayUrl = registry.relayUrl;
+      try {
+        const res = await fetch(`${relayUrl}/log/${itemId}`);
+        if (!res.ok) return fail(`Failed to fetch log: ${res.status}`);
+        const { messages } = await res.json();
+        if (!messages || messages.length === 0) {
+          return ok('(no log entries — build may not have started yet)');
+        }
+        return ok(messages.join('\n'));
+      } catch (e) {
+        return fail(`Failed to fetch log: ${e.message}`);
+      }
     }
   );
 
@@ -556,6 +592,100 @@ async function main() {
         result.errors.length
           ? `Deleted ${result.deleted} section(s). Errors: ${result.errors.join('; ')}`
           : `Deleted ${result.deleted} section(s) with class "${sectionClass}".`
+      );
+    }
+  );
+
+  // ── Updates helper ────────────────────────────────────────────────
+  // Sends an update request to the relay and polls for the result.
+  async function requestUpdate(siteId, body) {
+    const relayUrl = registry.relayUrl;
+
+    let reqRes;
+    try {
+      reqRes = await fetch(
+        `${relayUrl}/updates/request?siteId=${encodeURIComponent(siteId)}`,
+        { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }
+      );
+    } catch (e) {
+      return { error: `Cannot reach relay at ${relayUrl}. Run 'plinth dev' first.` };
+    }
+    if (!reqRes.ok) return { error: `Relay returned ${reqRes.status} for update request.` };
+
+    // Poll up to 30 s for the extension to respond
+    const deadline = Date.now() + 30_000;
+    while (Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 2000));
+      try {
+        const resultRes = await fetch(
+          `${relayUrl}/updates/result?siteId=${encodeURIComponent(siteId)}`
+        );
+        if (resultRes.ok) {
+          const data = await resultRes.json();
+          if (data.ready) return { result: data };
+        }
+      } catch { /* keep polling */ }
+    }
+
+    return { error: 'Update timed out after 30 s. Make sure the Designer Extension is open and connected.' };
+  }
+
+  // ── update_styles ─────────────────────────────────────────────────
+  server.tool(
+    'update_styles',
+    'Update CSS properties on existing named Webflow styles. Use this for visual tweaks — ' +
+    'color, spacing, typography — without rebuilding the whole section. ' +
+    'Each entry needs a style "name" (must already exist) and "properties" (longhand CSS only). ' +
+    'Optional "breakpoints" and "pseudo" are supported. ' +
+    'Requires the Designer Extension to be open.',
+    {
+      siteId: z.string().describe('The Webflow site ID'),
+      styles: z.array(z.object({
+        name:        z.string().describe('Style name (must already exist in Webflow)'),
+        properties:  z.record(z.string()).optional().describe('CSS properties to set (longhand only)'),
+        breakpoints: z.record(z.record(z.string())).optional().describe('Breakpoint overrides'),
+        pseudo:      z.record(z.record(z.string())).optional().describe('Pseudo-state overrides'),
+      })).describe('Styles to update'),
+    },
+    async ({ siteId, styles }) => {
+      const { result, error } = await requestUpdate(siteId, { type: 'styles', styles });
+      if (error) return fail(error);
+      return ok(
+        result.errors?.length
+          ? `Updated ${result.updated} style(s). Errors: ${result.errors.join('; ')}`
+          : `Updated ${result.updated} style(s).`
+      );
+    }
+  );
+
+  // ── update_content ────────────────────────────────────────────────
+  server.tool(
+    'update_content',
+    'Patch text, href, src, or alt on existing elements by their CSS class name. ' +
+    'Use this for copy changes, link updates, or image swaps without rebuilding the section. ' +
+    'Each entry targets all elements that have the given class. ' +
+    'Requires the Designer Extension to be open.',
+    {
+      siteId: z.string().describe('The Webflow site ID'),
+      updates: z.array(z.object({
+        className:  z.string().describe('CSS class of the element(s) to update'),
+        text:       z.string().optional().describe('New text content'),
+        href:       z.string().optional().describe('New href attribute'),
+        src:        z.string().optional().describe('New src attribute (images)'),
+        alt:        z.string().optional().describe('New alt text (images)'),
+        attributes: z.array(z.object({
+          name:  z.string(),
+          value: z.string(),
+        })).optional().describe('Arbitrary HTML attributes to set'),
+      })).describe('Content updates to apply'),
+    },
+    async ({ siteId, updates }) => {
+      const { result, error } = await requestUpdate(siteId, { type: 'content', updates });
+      if (error) return fail(error);
+      return ok(
+        result.errors?.length
+          ? `Updated ${result.updated} element(s). Errors: ${result.errors.join('; ')}`
+          : `Updated ${result.updated} element(s).`
       );
     }
   );

@@ -33,17 +33,41 @@ export interface StyleResult {
 export async function createStyles(
   styles: StyleDef[],
   onProgress?: (msg: string) => void,
+  upsert = false,
 ): Promise<StyleResult> {
   let created = 0;
   let skipped = 0;
 
   for (const styleDef of styles) {
     try {
-      // Check whether the style already exists to avoid duplicates.
+      // Check whether the style already exists.
       const existing = await webflow.getStyleByName(styleDef.name);
       if (existing) {
-        onProgress?.(`[styles] Skipping "${styleDef.name}" — already exists`);
-        skipped++;
+        if (!upsert) {
+          onProgress?.(`[styles] Skipping "${styleDef.name}" — already exists`);
+          skipped++;
+          continue;
+        }
+        // upsert mode: update the existing style in place
+        onProgress?.(`[styles] Updating "${styleDef.name}" (upsert)`);
+        if (Object.keys(styleDef.properties).length > 0) {
+          await existing.setProperties(styleDef.properties);
+        }
+        if (styleDef.breakpoints) {
+          for (const [breakpointId, bpProps] of Object.entries(styleDef.breakpoints)) {
+            if (bpProps && Object.keys(bpProps).length > 0) {
+              await existing.setProperties(bpProps, { breakpoint: breakpointId as BreakpointId });
+            }
+          }
+        }
+        if (styleDef.pseudo) {
+          for (const [pseudoState, pseudoProps] of Object.entries(styleDef.pseudo)) {
+            if (pseudoProps && Object.keys(pseudoProps).length > 0) {
+              await existing.setProperties(pseudoProps, { pseudo: pseudoState as PseudoStateKey });
+            }
+          }
+        }
+        created++;
         continue;
       }
 

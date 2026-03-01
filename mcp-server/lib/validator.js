@@ -262,6 +262,18 @@ function validateBuildPlan(plan) {
     });
   }
 
+  // replacesSectionClass (optional — kebab-case string)
+  if (plan.replacesSectionClass != null) {
+    if (typeof plan.replacesSectionClass !== 'string' || !plan.replacesSectionClass.trim()) {
+      throw new ValidationError('BuildPlan.replacesSectionClass must be a non-empty string');
+    }
+    if (!KEBAB_CASE_RE.test(plan.replacesSectionClass)) {
+      throw new ValidationError(
+        `BuildPlan.replacesSectionClass "${plan.replacesSectionClass}" must be kebab-case`
+      );
+    }
+  }
+
   // tree — required, root must be Section
   if (plan.tree == null || typeof plan.tree !== 'object' || Array.isArray(plan.tree)) {
     throw new ValidationError('BuildPlan.tree is required and must be an object');

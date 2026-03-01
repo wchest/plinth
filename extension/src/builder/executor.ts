@@ -95,8 +95,64 @@ export async function executeBuildPlan(
   // Step 2: Resolve insertion point
   // ------------------------------------------------------------------
   let selectedEl: AnyElement | null = null;
+  let upsertStyles = false;
   try {
-    if (plan.insertAfterElementId) {
+    if (plan.replacesSectionClass) {
+      // Atomic replace: find the existing section, capture its preceding root
+      // sibling as the insertion anchor, then remove it.
+      upsertStyles = true;
+      const allElements = await webflow.getAllElements().catch(() => [] as AnyElement[]);
+      const allStyles = await webflow.getAllStyles().catch(() => [] as Style[]);
+      const styleNames = new Map<string, string>();
+      try {
+        const names = await Promise.all(allStyles.map((s) => s.getName()));
+        allStyles.forEach((s, i) => styleNames.set(s.id, names[i]));
+      } catch { /* proceed without style names */ }
+
+      const sections = allElements.filter((el) => el.type === 'Section');
+      let targetSection: AnyElement | null = null;
+      for (const section of sections) {
+        if (!('styles' in section) || (section as any).styles !== true) continue;
+        try {
+          const applied = await (section as any).getStyles() as Array<{ id: string }> | null;
+          if (!applied) continue;
+          const classes = applied
+            .filter(Boolean)
+            .map((s: { id: string }) => styleNames.get(s.id) ?? '')
+            .filter(Boolean);
+          if (classes.includes(plan.replacesSectionClass)) {
+            targetSection = section;
+            break;
+          }
+        } catch { continue; }
+      }
+
+      if (targetSection) {
+        // Find the previous root-level sibling to use as the insertion anchor.
+        try {
+          const root = await webflow.getRootElement();
+          if (root) {
+            const rootChildren = await (root as DOMElement).getChildren()
+              .catch(() => [] as AnyElement[]);
+            const idx = rootChildren.findIndex(
+              (el) => el.id?.element === (targetSection as any).id?.element,
+            );
+            if (idx > 0) {
+              selectedEl = rootChildren[idx - 1];
+              onProgress?.(
+                `[executor] Anchor: section at position ${idx - 1} (before "${plan.replacesSectionClass}")`,
+              );
+            }
+          }
+        } catch { /* no anchor — will append to root */ }
+        await (targetSection as any).remove();
+        onProgress?.(`[executor] Removed existing section with class "${plan.replacesSectionClass}"`);
+      } else {
+        onProgress?.(
+          `[executor] Warning: no section with class "${plan.replacesSectionClass}" found — building fresh`,
+        );
+      }
+    } else if (plan.insertAfterElementId) {
       // Deterministic: look up by element ID — no selection dependency.
       const allElements = await webflow.getAllElements().catch(() => [] as AnyElement[]);
       const target = allElements.find(
@@ -137,7 +193,7 @@ export async function executeBuildPlan(
 
   try {
     onProgress?.('[executor] Creating styles…');
-    const styleResult = await createStyles(plan.styles ?? [], onProgress);
+    const styleResult = await createStyles(plan.styles ?? [], onProgress, upsertStyles);
     stylesCreated = styleResult.created;
     stylesSkipped = styleResult.skipped;
     onProgress?.(

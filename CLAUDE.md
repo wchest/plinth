@@ -26,8 +26,12 @@ When the MCP server is registered, these tools are available:
 - `get_page_dom(siteId, pageId)` — get all text/content nodes with class names via Data API (always works, no extension needed)
 - `list_styles(siteId, pageId)` — list all CSS class names used on a page via Data API
 - `get_page_snapshot(siteId)` — get the full structural DOM (sections, containers, all elements) via the Designer Extension (requires extension open + connected)
+- `delete_elements(siteId, elementIds[])` — delete elements by ID (IDs from get_page_snapshot)
+- `delete_section(siteId, sectionClass)` — delete all Sections with a given class name
+- `update_styles(siteId, styles[])` — update CSS properties on existing named styles
+- `update_content(siteId, updates[])` — patch text/href/src/alt on elements by class name
 
-**Note**: `get_page_dom` and `list_styles` use the Webflow Data API and reflect saved content nodes only (no structural elements). `get_page_snapshot` uses the Designer Extension and sees the full live DOM including layout structure.
+**Note**: `get_page_dom` and `list_styles` use the Webflow Data API and reflect saved content nodes only (no structural elements). All other extension tools require the Designer Extension to be open and connected.
 
 ## BuildPlan Rules
 - All CSS must be longhand (padding-top, not padding)
@@ -41,11 +45,14 @@ When the MCP server is registered, these tools are available:
 
 ## Workflow
 1. Read skill/SKILL.md and the relevant design system doc
-2. Generate a BuildPlan for one section
-3. Call `queue_buildplan` with the plan
-4. Check progress with `get_queue_status`
-5. Verify the built section in Webflow Designer
-6. Iterate — fix any issues and re-queue
+2. Orient: `get_page_snapshot` to see what's on canvas, `get_queue_status` to check for pending items
+3. Generate a BuildPlan for **one section at a time**
+4. Call `queue_buildplan(plan, wait=true)` — blocks until built, returns errors inline
+5. **Verify immediately**: call `get_page_snapshot` — confirm the section exists and structure is correct
+6. Use the section's element ID as `insertAfterElementId` for the next section
+7. Repeat from step 3
+
+**Editing existing sections**: use `update_styles`, `update_content`, or `replacesSectionClass` in BuildPlan — see skill/SKILL.md for the decision guide.
 
 ## Setting Up for a New Project
 See the full walkthrough in the project README. Short version:

@@ -62,14 +62,29 @@ router.get('/:itemId', async (req, res) => {
     return res.status(err.status || 404).json({ error: err.message });
   }
 
-  let item;
+  // Check in-memory override first — the CMS item may already be deleted
+  // (extension auto-deletes after marking done) but we still need to serve the status.
+  const override = statusOverrides.get(itemId);
+
+  let item = null;
   try {
     item = await client.getItem(itemId);
   } catch (err) {
-    return res.status(err.status === 404 ? 404 : 500).json({ error: err.message });
+    if (err.status !== 404) {
+      return res.status(500).json({ error: err.message });
+    }
+    // CMS item gone — serve from in-memory override if available
+    if (!override) {
+      return res.status(404).json({ error: 'Item not found' });
+    }
+    return res.json({
+      id: itemId,
+      status: override.status,
+      ...(override.errorMessage ? { errorMessage: override.errorMessage } : {}),
+      ...(override.buildStats  ? { buildStats:   override.buildStats   } : {}),
+    });
   }
 
-  const override = statusOverrides.get(itemId);
   const response = {
     id: item.id,
     name: item.name,

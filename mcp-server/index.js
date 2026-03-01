@@ -35,6 +35,8 @@ const statusRouter   = require('./routes/status');
 const healthRouter   = require('./routes/health');
 const snapshotRouter = require('./routes/snapshot');
 const deleteRouter   = require('./routes/delete');
+const logRouter      = require('./routes/log');
+const updatesRouter  = require('./routes/updates');
 
 // --- Config path resolution -------------------------------------------
 //
@@ -86,7 +88,12 @@ app.use((req, res, next) => {
   const path   = req.path; // capture before Express rewrites it for sub-routers
   res.on('finish', () => {
     // Skip noisy heartbeat polls
-    if (res.statusCode === 200 && (path === '/snapshot/pending' || path === '/delete/pending')) return;
+    if (res.statusCode === 200 && (
+      path === '/snapshot/pending' ||
+      path === '/delete/pending' ||
+      path === '/updates/pending'
+    )) return;
+    if (res.statusCode === 200 && method === 'POST' && path.startsWith('/log/')) return;
     const ms = Date.now() - start;
     const qs = req.query && Object.keys(req.query).length
       ? '?' + new URLSearchParams(req.query).toString() : '';
@@ -105,6 +112,8 @@ app.use('/status',   statusRouter);
 app.use('/health',   healthRouter);
 app.use('/snapshot', snapshotRouter);
 app.use('/delete',   deleteRouter);
+app.use('/log',      logRouter);
+app.use('/updates',  updatesRouter);
 
 // --- 404 handler ------------------------------------------------------
 
