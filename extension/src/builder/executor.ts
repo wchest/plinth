@@ -9,6 +9,46 @@ import { createStyles } from './style-manager';
 import { buildTree } from './element-factory';
 
 // ---------------------------------------------------------------------------
+// Internal helpers
+// ---------------------------------------------------------------------------
+
+/** Build a map of styleId → styleName for all styles on the site. */
+async function buildStyleNameMap(): Promise<Map<string, string>> {
+  const allStyles = await webflow.getAllStyles().catch(() => [] as Style[]);
+  const styleNames = new Map<string, string>();
+  try {
+    const names = await Promise.all(allStyles.map((s) => s.getName()));
+    allStyles.forEach((s, i) => styleNames.set(s.id, names[i]));
+  } catch { /* proceed with empty map */ }
+  return styleNames;
+}
+
+/**
+ * Find the first Section element whose applied styles include `className`.
+ * Returns null if not found.
+ */
+async function findSectionByClass(
+  className: string,
+  styleNames: Map<string, string>,
+): Promise<AnyElement | null> {
+  const allElements = await webflow.getAllElements().catch(() => [] as AnyElement[]);
+  const sections = allElements.filter((el) => el.type === 'Section');
+  for (const section of sections) {
+    if (!('styles' in section) || (section as any).styles !== true) continue;
+    try {
+      const applied = await (section as any).getStyles() as Array<{ id: string }> | null;
+      if (!applied) continue;
+      const classes = applied
+        .filter(Boolean)
+        .map((s: { id: string }) => styleNames.get(s.id) ?? '')
+        .filter(Boolean);
+      if (classes.includes(className)) return section;
+    } catch { continue; }
+  }
+  return null;
+}
+
+// ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
 
@@ -101,31 +141,8 @@ export async function executeBuildPlan(
       // Atomic replace: find the existing section, capture its preceding root
       // sibling as the insertion anchor, then remove it.
       upsertStyles = true;
-      const allElements = await webflow.getAllElements().catch(() => [] as AnyElement[]);
-      const allStyles = await webflow.getAllStyles().catch(() => [] as Style[]);
-      const styleNames = new Map<string, string>();
-      try {
-        const names = await Promise.all(allStyles.map((s) => s.getName()));
-        allStyles.forEach((s, i) => styleNames.set(s.id, names[i]));
-      } catch { /* proceed without style names */ }
-
-      const sections = allElements.filter((el) => el.type === 'Section');
-      let targetSection: AnyElement | null = null;
-      for (const section of sections) {
-        if (!('styles' in section) || (section as any).styles !== true) continue;
-        try {
-          const applied = await (section as any).getStyles() as Array<{ id: string }> | null;
-          if (!applied) continue;
-          const classes = applied
-            .filter(Boolean)
-            .map((s: { id: string }) => styleNames.get(s.id) ?? '')
-            .filter(Boolean);
-          if (classes.includes(plan.replacesSectionClass)) {
-            targetSection = section;
-            break;
-          }
-        } catch { continue; }
-      }
+      const styleNames = await buildStyleNameMap();
+      const targetSection = await findSectionByClass(plan.replacesSectionClass, styleNames);
 
       if (targetSection) {
         // Find the previous root-level sibling to use as the insertion anchor.
@@ -150,6 +167,19 @@ export async function executeBuildPlan(
       } else {
         onProgress?.(
           `[executor] Warning: no section with class "${plan.replacesSectionClass}" found — building fresh`,
+        );
+      }
+    } else if (plan.insertAfterSectionClass) {
+      // Find the named section and use it as the insertion anchor.
+      const styleNames = await buildStyleNameMap();
+      const target = await findSectionByClass(plan.insertAfterSectionClass, styleNames);
+      if (target) {
+        selectedEl = target;
+        onProgress?.(`[executor] Insertion point: after section with class "${plan.insertAfterSectionClass}"`);
+      } else {
+        onProgress?.(
+          `[executor] Warning: no section with class "${plan.insertAfterSectionClass}" found ` +
+          '— falling back to page root.',
         );
       }
     } else if (plan.insertAfterElementId) {

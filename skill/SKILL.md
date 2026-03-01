@@ -26,11 +26,24 @@ A BuildPlan is a JSON document describing **one section** of a Webflow page. Cla
 
 **One BuildPlan = one Section element as the root.**
 
-### `insertAfterElementId` (optional but recommended)
+### Controlling insertion position
 
-Set this to the Designer element ID of the section the new section should appear **after**. The extension looks it up by ID — fully headless, no manual selection in the Designer required.
+Three options, in priority order:
 
-Get element IDs from `get_page_dom` (the `id` field on each node returned by the tool). Omit the field to fall back to the currently selected element, or the page root if nothing is selected.
+**`insertAfterSectionClass`** (recommended for most cases)
+Set this to the CSS class of the section you want the new section to appear **after**. The extension finds it by class name — no element IDs needed.
+```json
+"insertAfterSectionClass": "hero-section"
+```
+Use this when you know which section comes before the new one. Works even if you haven't called `get_page_snapshot` yet.
+
+**`insertAfterElementId`** (use when you need precision)
+Set this to the Designer element ID returned by `get_page_snapshot`. Useful when multiple sections share a class, or you need to target a non-Section element.
+```json
+"insertAfterElementId": "abc123def456"
+```
+
+**Neither field set** — falls back to the currently selected element in the Designer, or the page root if nothing is selected. Avoid this for automated builds.
 
 ---
 

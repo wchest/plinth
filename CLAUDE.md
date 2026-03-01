@@ -42,6 +42,8 @@ When the MCP server is registered, these tools are available:
 - Images need `src` and `alt`
 - Max nesting: 6 levels
 - One BuildPlan = one section (Section as root element)
+- Use `insertAfterSectionClass` to place a section after an existing one (by class name — no element ID needed)
+- Use `insertAfterElementId` when you need precision (element ID from `get_page_snapshot`)
 
 ## Workflow
 1. Read skill/SKILL.md and the relevant design system doc

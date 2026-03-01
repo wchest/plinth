@@ -78,6 +78,12 @@ export interface BuildPlan {
   /** If set, the new section is inserted after this element ID. Fully headless — no selection needed. */
   insertAfterElementId?: string;
   /**
+   * If set, find the Section with this CSS class name and insert the new section after it.
+   * More ergonomic than insertAfterElementId — no need to look up element IDs first.
+   * Ignored if insertAfterElementId is also set.
+   */
+  insertAfterSectionClass?: string;
+  /**
    * If set, find the existing Section with this class name, delete it, and
    * build the new section in the same position. Styles are upserted (updated
    * if they already exist). Use this to edit/replace a section in place.
@@ -417,6 +423,9 @@ export function validate(plan: unknown): BuildPlan {
     order: p['order'] as number,
     ...(p['insertAfterElementId'] !== undefined
       ? { insertAfterElementId: p['insertAfterElementId'] as string }
+      : {}),
+    ...(p['insertAfterSectionClass'] !== undefined
+      ? { insertAfterSectionClass: p['insertAfterSectionClass'] as string }
       : {}),
     ...(p['replacesSectionClass'] !== undefined
       ? { replacesSectionClass: p['replacesSectionClass'] as string }

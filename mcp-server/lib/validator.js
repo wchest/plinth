@@ -262,6 +262,18 @@ function validateBuildPlan(plan) {
     });
   }
 
+  // insertAfterSectionClass (optional — kebab-case string)
+  if (plan.insertAfterSectionClass != null) {
+    if (typeof plan.insertAfterSectionClass !== 'string' || !plan.insertAfterSectionClass.trim()) {
+      throw new ValidationError('BuildPlan.insertAfterSectionClass must be a non-empty string');
+    }
+    if (!KEBAB_CASE_RE.test(plan.insertAfterSectionClass)) {
+      throw new ValidationError(
+        `BuildPlan.insertAfterSectionClass "${plan.insertAfterSectionClass}" must be kebab-case`
+      );
+    }
+  }
+
   // replacesSectionClass (optional — kebab-case string)
   if (plan.replacesSectionClass != null) {
     if (typeof plan.replacesSectionClass !== 'string' || !plan.replacesSectionClass.trim()) {
