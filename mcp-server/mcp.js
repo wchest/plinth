@@ -690,6 +690,85 @@ async function main() {
     }
   );
 
+  // ── Insert helper ─────────────────────────────────────────────────
+  async function requestInsert(siteId, body) {
+    const relayUrl = registry.relayUrl;
+
+    let reqRes;
+    try {
+      reqRes = await fetch(
+        `${relayUrl}/insert/request?siteId=${encodeURIComponent(siteId)}`,
+        { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }
+      );
+    } catch (e) {
+      return { error: `Cannot reach relay at ${relayUrl}. Run 'plinth dev' first.` };
+    }
+    if (!reqRes.ok) return { error: `Relay returned ${reqRes.status} for insert request.` };
+
+    const deadline = Date.now() + 30_000;
+    while (Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 2000));
+      try {
+        const resultRes = await fetch(
+          `${relayUrl}/insert/result?siteId=${encodeURIComponent(siteId)}`
+        );
+        if (resultRes.ok) {
+          const data = await resultRes.json();
+          if (data.ready) return { result: data };
+        }
+      } catch { /* keep polling */ }
+    }
+
+    return { error: 'Insert timed out after 30 s. Make sure the Designer Extension is open.' };
+  }
+
+  // ── insert_elements ───────────────────────────────────────────────
+  server.tool(
+    'insert_elements',
+    'Add new elements inside or after an existing element — without rebuilding the whole section. ' +
+    'Use parentClass to append nodes as children inside a named element (e.g. add a card to a grid). ' +
+    'Use afterClass to insert nodes as siblings after a named element (e.g. add a button after a heading). ' +
+    'Exactly one of parentClass or afterClass must be provided. ' +
+    'Nodes use the same ElementNode format as BuildPlan (type, className, text, href, children, etc). ' +
+    'Requires the Designer Extension to be open.',
+    {
+      siteId: z.string().describe('The Webflow site ID'),
+      nodes: z.array(z.record(z.any())).describe(
+        'Element nodes to insert (same format as BuildPlan tree nodes — type, className, text, href, children, etc)'
+      ),
+      parentClass: z.string().optional().describe(
+        'CSS class of the parent element to append nodes inside (e.g. "card-grid")'
+      ),
+      afterClass: z.string().optional().describe(
+        'CSS class of the sibling element to insert nodes after (e.g. "hero-badge")'
+      ),
+      styles: z.array(z.record(z.any())).optional().describe(
+        'StyleDef objects to create before inserting (same format as BuildPlan styles)'
+      ),
+    },
+    async ({ siteId, nodes, parentClass, afterClass, styles }) => {
+      if (!parentClass && !afterClass) {
+        return fail('Provide parentClass (append inside) or afterClass (insert after sibling).');
+      }
+      if (parentClass && afterClass) {
+        return fail('Provide parentClass or afterClass, not both.');
+      }
+
+      const { result, error } = await requestInsert(siteId, {
+        parentClass, afterClass, nodes, styles,
+      });
+      if (error) return fail(error);
+
+      const summary = [
+        `Inserted ${result.inserted} element(s).`,
+        result.stylesCreated > 0 ? `Created ${result.stylesCreated} style(s).` : '',
+        result.errors?.length   ? `Errors: ${result.errors.join('; ')}` : '',
+      ].filter(Boolean).join(' ');
+
+      return ok(summary);
+    }
+  );
+
   // ── copy_to_webflow ───────────────────────────────────────────────
   server.tool(
     'copy_to_webflow',

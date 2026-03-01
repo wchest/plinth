@@ -386,13 +386,38 @@ Add `replacesSectionClass` to the BuildPlan root:
 
 ---
 
+### 4. Add elements to an existing section — `insert_elements`
+
+Add new nodes inside or after an existing element without touching the rest.
+
+```
+insert_elements(siteId, nodes[], parentClass?, afterClass?, styles?)
+```
+
+Exactly one of `parentClass` or `afterClass` must be provided:
+- **`parentClass`** — append nodes as children inside the named element (e.g. add a card to `"card-grid"`)
+- **`afterClass`** — insert nodes as siblings after the named element (e.g. add a button after `"hero-heading"`)
+
+`nodes` uses the same ElementNode format as a BuildPlan tree (type, className, text, href, children, etc) but the root doesn't need to be a Section.
+
+**Use when:** adding a missing element, injecting a new card into a grid, inserting a CTA button.
+
+**Cannot do with insert_elements:**
+- Change nesting depth of existing elements (wrapping, unwrapping)
+- Move elements to different positions
+- For those, use `replacesSectionClass` to rebuild the section
+
+---
+
 ### Decision guide
 
 | What changed | Use |
 |---|---|
 | Only CSS (colors, sizes, spacing) | `update_styles` |
 | Only text, links, or attributes | `update_content` |
-| Structure, nesting, or element types | `replacesSectionClass` in BuildPlan |
+| Add new elements | `insert_elements` |
+| Remove specific elements | `delete_elements` |
+| Change nesting / restructure | `replacesSectionClass` in BuildPlan |
 | First time building a section | `queue_buildplan` (no `replacesSectionClass`) |
 
 After any edit, call `get_page_snapshot` to verify the changes took effect.
