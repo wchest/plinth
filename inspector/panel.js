@@ -2238,6 +2238,288 @@
     return lines.join('\n            ');
   }
 
+  // ── Spy: Capture style and binding dispatch actions ──────────────
+
+  // Generic action spy — installs on _dispatch, filters by keyword, captures full payloads
+  async function installActionSpy(filterKeywords, label) {
+    const keywords = JSON.stringify(filterKeywords);
+    const code = `
+      (function() {
+        try {
+          var flux = window._webflow;
+          if (!flux || !flux._dispatch) return { error: '_webflow._dispatch not found' };
+
+          // Read any previously captured actions first
+          var prev = window.__plinthSpyResults || [];
+
+          // Reset
+          window.__plinthSpyResults = [];
+
+          // Install/reinstall spy
+          if (!window.__plinthSpyOrig) {
+            window.__plinthSpyOrig = flux._dispatch;
+          }
+          var orig = window.__plinthSpyOrig;
+          var keywords = ${keywords};
+
+          flux._dispatch = function(action, lane) {
+            try {
+              var t = action?.type || '';
+              // Filter: capture actions matching any keyword, skip noise
+              var dominated = ['NODE_HOVERED','POST_MESSAGE_RECEIVED','CANVAS_SCROLL',
+                'MULTIPLAYER_PRESENCE','ANALYTICS','LEFT_SIDEBAR_SCREENSHOT',
+                'GRID_CELL_HOVERED','CANVAS_USER_SCROLL'];
+              var isNoise = dominated.some(function(n) { return t.indexOf(n) >= 0; });
+
+              if (!isNoise) {
+                var matchesFilter = keywords.length === 0 || keywords.some(function(kw) {
+                  return t.toUpperCase().indexOf(kw.toUpperCase()) >= 0;
+                });
+
+                if (matchesFilter && window.__plinthSpyResults.length < 50) {
+                  var entry = {
+                    type: t,
+                    keys: action ? Object.keys(action).filter(function(k) { return k !== 'state' && k !== 'timestamp'; }).slice(0, 15) : [],
+                    lane: lane,
+                    time: Date.now()
+                  };
+                  if (action?.payload && typeof action.payload === 'object') {
+                    entry.payloadKeys = Object.keys(action.payload).slice(0, 25);
+                    // Deep-capture payload values (safe stringify)
+                    var vals = {};
+                    Object.keys(action.payload).slice(0, 25).forEach(function(k) {
+                      var v = action.payload[k];
+                      if (v === null || v === undefined) vals[k] = v;
+                      else if (typeof v === 'string') vals[k] = v.slice(0, 200);
+                      else if (typeof v === 'number' || typeof v === 'boolean') vals[k] = v;
+                      else if (Array.isArray(v)) vals[k] = { _array: true, length: v.length, first: String(v[0]).slice(0, 100) };
+                      else if (typeof v === 'object') {
+                        vals[k] = {
+                          _type: typeof v,
+                          constructor: v.constructor?.name,
+                          keys: Object.keys(v).slice(0, 15),
+                          hasGet: typeof v.get === 'function',
+                          size: typeof v.size === 'number' ? v.size : undefined
+                        };
+                      }
+                      else vals[k] = typeof v;
+                    });
+                    entry.payloadValues = vals;
+                  }
+                  window.__plinthSpyResults.push(entry);
+                }
+              }
+            } catch(e) {}
+            return orig.apply(this, arguments);
+          };
+
+          return {
+            installed: true,
+            previousCaptures: prev.length,
+            captured: prev
+          };
+        } catch(e) {
+          return { error: e.message };
+        }
+      })()
+    `;
+    return evalInPage(code);
+  }
+
+  // Spy Styles button
+  $('#btn-spy-styles').addEventListener('click', async () => {
+    builderOutput.innerHTML = '<span class="info">Installing style action spy...</span>';
+    try {
+      const result = await installActionSpy(
+        ['STYLE', 'CLASS', 'BLOCK', 'CSS', 'PROPERTY', 'SELECTOR', 'VARIABLE', 'TOKEN', 'THEME', 'SWATCH', 'COLOR'],
+        'styles'
+      );
+
+      if (result.error) {
+        builderOutput.innerHTML = `<span class="error">${escHtml(result.error)}</span>`;
+        return;
+      }
+
+      if (result.captured && result.captured.length > 0) {
+        // Show previously captured actions
+        let html = `<div class="success">Captured ${result.captured.length} style-related actions:</div>`;
+        for (const action of result.captured) {
+          html += `<div class="kv-row" style="margin:4px 0;border-bottom:1px solid #333;padding-bottom:4px">`;
+          html += `<strong style="color:#ff8">${escHtml(action.type)}</strong>`;
+          if (action.payloadKeys) {
+            html += `<div style="font-size:10px;color:#888">keys: ${escHtml(action.payloadKeys.join(', '))}</div>`;
+          }
+          if (action.payloadValues) {
+            html += `<pre style="font-size:9px;max-height:150px;overflow:auto">${escHtml(formatJson(action.payloadValues))}</pre>`;
+          }
+          html += `</div>`;
+        }
+        html += `<div style="margin:8px 0"><button id="btn-download-spy">Download spy-results.json</button></div>`;
+        builderOutput.innerHTML = html;
+        document.getElementById('btn-download-spy')?.addEventListener('click', () => {
+          const blob = new Blob([formatJson(result.captured)], { type: 'application/json' });
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement('a');
+          a.href = url; a.download = 'spy-styles.json'; a.click();
+          URL.revokeObjectURL(url);
+        });
+      } else {
+        builderOutput.innerHTML = `<div class="success">Style spy installed! Now:</div>
+          <div class="info">1. Select an element on the canvas</div>
+          <div class="info">2. Change a CSS property in the Style panel (e.g. background color)</div>
+          <div class="info">3. Click "Spy Styles" again to see captured actions</div>`;
+      }
+    } catch (err) {
+      builderOutput.innerHTML = `<span class="error">Error: ${escHtml(err.message)}</span>`;
+    }
+  });
+
+  // Spy Bindings button
+  $('#btn-spy-bindings').addEventListener('click', async () => {
+    builderOutput.innerHTML = '<span class="info">Installing binding action spy...</span>';
+    try {
+      const result = await installActionSpy(
+        ['BIND', 'COLLECTION', 'DYNAMIC', 'FIELD', 'CMS', 'ITEM', 'CONTEXT'],
+        'bindings'
+      );
+
+      if (result.error) {
+        builderOutput.innerHTML = `<span class="error">${escHtml(result.error)}</span>`;
+        return;
+      }
+
+      if (result.captured && result.captured.length > 0) {
+        let html = `<div class="success">Captured ${result.captured.length} binding-related actions:</div>`;
+        for (const action of result.captured) {
+          html += `<div class="kv-row" style="margin:4px 0;border-bottom:1px solid #333;padding-bottom:4px">`;
+          html += `<strong style="color:#ff8">${escHtml(action.type)}</strong>`;
+          if (action.payloadKeys) {
+            html += `<div style="font-size:10px;color:#888">keys: ${escHtml(action.payloadKeys.join(', '))}</div>`;
+          }
+          if (action.payloadValues) {
+            html += `<pre style="font-size:9px;max-height:150px;overflow:auto">${escHtml(formatJson(action.payloadValues))}</pre>`;
+          }
+          html += `</div>`;
+        }
+        html += `<div style="margin:8px 0"><button id="btn-download-spy-bind">Download spy-results.json</button></div>`;
+        builderOutput.innerHTML = html;
+        document.getElementById('btn-download-spy-bind')?.addEventListener('click', () => {
+          const blob = new Blob([formatJson(result.captured)], { type: 'application/json' });
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement('a');
+          a.href = url; a.download = 'spy-bindings.json'; a.click();
+          URL.revokeObjectURL(url);
+        });
+      } else {
+        builderOutput.innerHTML = `<div class="success">Binding spy installed! Now:</div>
+          <div class="info">1. Select a text element inside a Collection List</div>
+          <div class="info">2. Bind it to a CMS field via "Get text from" in Settings</div>
+          <div class="info">3. Click "Spy Bindings" again to see captured actions</div>`;
+      }
+    } catch (err) {
+      builderOutput.innerHTML = `<span class="error">Error: ${escHtml(err.message)}</span>`;
+    }
+  });
+
+  // Spy All button — capture everything non-noise
+  $('#btn-spy-all').addEventListener('click', async () => {
+    builderOutput.innerHTML = '<span class="info">Installing catch-all action spy...</span>';
+    try {
+      const result = await installActionSpy([], 'all');  // empty keywords = match all
+
+      if (result.error) {
+        builderOutput.innerHTML = `<span class="error">${escHtml(result.error)}</span>`;
+        return;
+      }
+
+      if (result.captured && result.captured.length > 0) {
+        // Group by type for readability
+        const byType = {};
+        for (const a of result.captured) {
+          if (!byType[a.type]) byType[a.type] = [];
+          byType[a.type].push(a);
+        }
+        const uniqueTypes = Object.keys(byType).length;
+
+        let html = `<div class="success">Captured ${result.captured.length} actions (${uniqueTypes} unique types):</div>`;
+        for (const [type, actions] of Object.entries(byType)) {
+          const first = actions[0];
+          html += `<div class="kv-row" style="margin:4px 0;border-bottom:1px solid #333;padding-bottom:4px">`;
+          html += `<strong style="color:#ff8">${escHtml(type)}</strong> <span style="color:#888">(${actions.length}x)</span>`;
+          if (first.payloadKeys) {
+            html += `<div style="font-size:10px;color:#888">keys: ${escHtml(first.payloadKeys.join(', '))}</div>`;
+          }
+          if (first.payloadValues) {
+            html += `<pre style="font-size:9px;max-height:100px;overflow:auto">${escHtml(formatJson(first.payloadValues))}</pre>`;
+          }
+          html += `</div>`;
+        }
+        html += `<div style="margin:8px 0"><button id="btn-download-spy-all">Download spy-all.json</button></div>`;
+        builderOutput.innerHTML = html;
+        document.getElementById('btn-download-spy-all')?.addEventListener('click', () => {
+          const blob = new Blob([formatJson(result.captured)], { type: 'application/json' });
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement('a');
+          a.href = url; a.download = 'spy-all.json'; a.click();
+          URL.revokeObjectURL(url);
+        });
+      } else {
+        builderOutput.innerHTML = `<div class="success">Catch-all spy installed! Now:</div>
+          <div class="info">1. Do any action in the Designer</div>
+          <div class="info">2. Click "Spy All" again to see every dispatched action</div>`;
+      }
+    } catch (err) {
+      builderOutput.innerHTML = `<span class="error">Error: ${escHtml(err.message)}</span>`;
+    }
+  });
+
+  // Spy Variables button
+  $('#btn-spy-variables').addEventListener('click', async () => {
+    builderOutput.innerHTML = '<span class="info">Installing variable action spy...</span>';
+    try {
+      const result = await installActionSpy(
+        ['VARIABLE', 'TOKEN', 'SWATCH', 'THEME', 'COLOR', 'DESIGN_TOKEN', 'CSS_VAR'],
+        'variables'
+      );
+
+      if (result.error) {
+        builderOutput.innerHTML = `<span class="error">${escHtml(result.error)}</span>`;
+        return;
+      }
+
+      if (result.captured && result.captured.length > 0) {
+        let html = `<div class="success">Captured ${result.captured.length} variable-related actions:</div>`;
+        for (const action of result.captured) {
+          html += `<div class="kv-row" style="margin:4px 0;border-bottom:1px solid #333;padding-bottom:4px">`;
+          html += `<strong style="color:#ff8">${escHtml(action.type)}</strong>`;
+          if (action.payloadKeys) {
+            html += `<div style="font-size:10px;color:#888">keys: ${escHtml(action.payloadKeys.join(', '))}</div>`;
+          }
+          if (action.payloadValues) {
+            html += `<pre style="font-size:9px;max-height:150px;overflow:auto">${escHtml(formatJson(action.payloadValues))}</pre>`;
+          }
+          html += `</div>`;
+        }
+        html += `<div style="margin:8px 0"><button id="btn-download-spy-var">Download spy-results.json</button></div>`;
+        builderOutput.innerHTML = html;
+        document.getElementById('btn-download-spy-var')?.addEventListener('click', () => {
+          const blob = new Blob([formatJson(result.captured)], { type: 'application/json' });
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement('a');
+          a.href = url; a.download = 'spy-variables.json'; a.click();
+          URL.revokeObjectURL(url);
+        });
+      } else {
+        builderOutput.innerHTML = `<div class="success">Variable spy installed! Now:</div>
+          <div class="info">1. Open Variables panel (or Style panel → use a variable)</div>
+          <div class="info">2. Create, edit, or apply a variable/swatch</div>
+          <div class="info">3. Click "Spy Variables" again to see captured actions</div>`;
+      }
+    } catch (err) {
+      builderOutput.innerHTML = `<span class="error">Error: ${escHtml(err.message)}</span>`;
+    }
+  });
+
   // Validate WFDL — test a string without adding to canvas
   $('#btn-validate-wfdl').addEventListener('click', async () => {
     // Use the snapshot paste textarea for input

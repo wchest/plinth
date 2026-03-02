@@ -976,3 +976,132 @@ _webflow._dispatch = function(action, lane) {
 ```
 
 Patching `_webflow.dispatch` misses actions dispatched from bound action creator references (they hold a closure over the original `_dispatch`). Patching `_dispatch` directly catches ALL actions regardless of call site.
+
+---
+
+## Builder UI — All 10 Element Types Confirmed Working
+
+All 10 core element types successfully create on canvas via `ELEMENT_ADDED` dispatch.
+
+### Element Construction Pattern
+
+```js
+// Universal pattern for all element types:
+EElement({id: string, type: array, data: ERecord(...)})
+  → Expr.getElement()   // unwrap to raw {id, type, data}
+  → dispatch ELEMENT_ADDED with raw element
+```
+
+### Text Content Pattern
+
+For Heading, Paragraph, Button, and TextBlock, text content is stored as a child element:
+
+```js
+// Children list contains a String element:
+EElement({
+  id: stringId,
+  type: ['Basic', 'String'],
+  data: EText('content')
+})
+```
+
+### Section Grid Data
+
+Section requires a `grid` field in its data record:
+
+```js
+ERecord({
+  grid: ERecord({ type: EText('section') }),
+  tag: EEnum('section'),
+  children: EList([])
+})
+```
+
+### Data Fields by Element Type
+
+| Element Type | Type Array | Data Fields |
+|---|---|---|
+| **Section** | `["Layout","Section"]` | `grid: ERecord({type: EText('section')})`, `tag: EEnum('section')`, `children: EList([])` |
+| **DivBlock** | `["Basic","Block"]` | `tag: EEnum('div')`, `text: EBoolean(false)`, `children: EList([])` |
+| **Heading** | `["Basic","Heading"]` | `tag: EEnum('h1')` through `EEnum('h6')`, `children: EList([StringChild])` |
+| **Paragraph** | `["Basic","Paragraph"]` | `children: EList([StringChild])` |
+| **Button** | `["Basic","Link"]` | `button: EBoolean(true)`, `block: EText('')`, `search: ...`, `eventIds: ...`, `children: EList([StringChild])`, `link: ELiteral({mode:'external',url:'#'})` |
+| **TextBlock** | `["Basic","Block"]` | `text: EBoolean(true)`, `tag: EEnum('div')`, `children: EList([StringChild])` |
+| **HFlex** | `["Layout","HFlex"]` | `tag: EEnum('div')`, `children: EList([])` |
+| **VFlex** | `["Layout","VFlex"]` | `tag: EEnum('div')`, `children: EList([])` |
+| **Grid** | `["Layout","Grid"]` | `tag: EEnum('div')`, `children: EList([])` |
+| **Link** | `["Basic","Link"]` | `children: EList([])` |
+
+*StringChild* = `EElement({id, type: ['Basic','String'], data: EText('content')})`
+
+### idMap Key Names
+
+The `idMap` returned by `instantiateFactory` uses these key names (note inconsistencies):
+
+| Key Name | Notes |
+|---|---|
+| `"Div Block"` | Space-separated (NOT "DivBlock") |
+| `"TextBlock"` | No space |
+| `"HFlex"` | |
+| `"VFlex"` | |
+| `"Link Block"` | Space-separated |
+| `"Section"` | |
+| `"Heading"` | |
+| `"Paragraph"` | |
+| `"Button"` | |
+| `"Grid"` | |
+
+---
+
+## Architecture: Content Script Bridge
+
+### Current Architecture (CMS Queue)
+
+```
+Claude → MCP Server → Webflow CMS API (write queue item)
+  → Designer Extension (polls CMS, foregrounded) → wf.addToCanvas() / ELEMENT_ADDED dispatch
+```
+
+- Extension must be foregrounded (iframe visible in Designer panel)
+- CMS queue adds latency (polling interval + API round trips)
+- Extension uses postMessage bridge between iframe and Designer context
+
+### Proposed Architecture (Content Script Bridge)
+
+```
+Claude → MCP Server → WebSocket → Content Script (MAIN world) → ELEMENT_ADDED dispatch
+```
+
+### What This Eliminates
+
+- **CMS queue polling** — direct WebSocket push instead of CMS read/write cycle
+- **Extension iframe requirement** — content script runs in page context, not an iframe
+- **Foregrounding requirement** — MAIN world scripts execute regardless of which panel is open
+- **postMessage bridge** — content script has direct access to `_webflow._dispatch` and all internal APIs
+
+### How It Works
+
+- Chrome extension injects a content script with `world: "MAIN"` into the Webflow Designer page
+- Content script captures `__plinthRequire` via webpack chunk injection on load
+- MCP server opens a WebSocket connection to the content script (or vice versa via a local relay)
+- Claude sends build commands through MCP → WebSocket → content script dispatches `ELEMENT_ADDED` directly
+- Designer Extension remains installed as a fallback for operations not yet reverse-engineered
+
+### Still Need to Probe
+
+These dispatch actions / action creators have NOT been reverse-engineered yet:
+
+| Action Creator Namespace | Purpose | Status |
+|---|---|---|
+| **StyleActionCreators** | CSS class creation, style property updates | Not probed |
+| **BindingContextActionCreators** | CMS data binding to elements | Not probed |
+| **CollectionActionCreators** | CMS collection operations | Not probed |
+| **CollectionFieldActionCreators** | CMS field operations | Not probed |
+| **PageActionCreators** | Save, publish, page settings | Not probed |
+
+### Designer Extension as Fallback
+
+The existing Designer Extension architecture remains for:
+- Operations not yet reverse-engineered (styles, CMS bindings, save/publish)
+- Sites where the Chrome extension is not installed
+- Any future Webflow API changes that break the dispatch approach
