@@ -1990,6 +1990,254 @@
     }
   });
 
+  // ── Builder: Add elements via ELEMENT_ADDED dispatch ──────────────
+
+  const builderType = $('#builder-type');
+  const builderHeadingLevel = $('#builder-heading-level');
+  const builderText = $('#builder-text');
+  const builderPosition = $('#builder-position');
+  const builderOutput = $('#builder-output');
+
+  // Show/hide heading level selector
+  builderType.addEventListener('change', () => {
+    builderHeadingLevel.style.display = builderType.value === 'Heading' ? '' : 'none';
+  });
+
+  // Element type configs: [qualifiedType, presetQN, dataBuilder]
+  // dataBuilder is a function name string that will be expanded in the eval code
+  const ELEMENT_CONFIGS = {
+    Section:   { type: "['Layout','Section']",  preset: "['Layout','Section']",   tag: 'section', hasChildren: true },
+    DivBlock:  { type: "['Basic','Block']",     preset: "['Basic','DivBlock']",   tag: 'div', hasText: false, hasChildren: true },
+    Heading:   { type: "['Basic','Heading']",   preset: "['Basic','Heading']",    tag: null, hasChildren: true, hasTextChild: true },
+    Paragraph: { type: "['Basic','Paragraph']", preset: "['Basic','Paragraph']",  hasChildren: true, hasTextChild: true },
+    Button:    { type: "['Basic','Link']",      preset: "['Basic','Button']",     hasChildren: true, hasTextChild: true, isButton: true },
+    TextBlock: { type: "['Basic','Block']",     preset: "['Basic','TextBlock']",  tag: 'div', hasText: true, hasChildren: true, hasTextChild: true },
+    HFlex:     { type: "['Layout','HFlex']",    preset: "['Layout','HFlex']",     tag: 'div', hasChildren: true },
+    VFlex:     { type: "['Layout','VFlex']",    preset: "['Layout','VFlex']",     tag: 'div', hasChildren: true },
+    Grid:      { type: "['Layout','Grid']",     preset: "['Layout','Grid']",      tag: 'div', hasChildren: true },
+    Link:      { type: "['Basic','Link']",      preset: "['Basic','LinkBlock']",  hasChildren: true },
+  };
+
+  $('#btn-builder-add').addEventListener('click', async () => {
+    const elType = builderType.value;
+    const text = builderText.value.trim();
+    const headingLevel = builderHeadingLevel.value;
+    const position = builderPosition.value;
+    const config = ELEMENT_CONFIGS[elType];
+
+    if (!config) {
+      builderOutput.innerHTML = `<span class="error">Unknown element type: ${escHtml(elType)}</span>`;
+      return;
+    }
+
+    builderOutput.innerHTML = `<span class="info">Adding ${escHtml(elType)}...</span>`;
+
+    // Build the data fields code string (injected into eval)
+    const dataFieldsCode = buildDataFieldsCode(config, headingLevel,
+      JSON.stringify(text || getDefaultText(elType)));
+    const idMapKey = getIdMapKey(elType);
+
+    try {
+      const code = `
+        (function() {
+          try {
+            // Bootstrap __plinthRequire if needed
+            if (!window.__plinthRequire) {
+              var captured = null;
+              var mainChunk = window.webpackChunk;
+              if (!mainChunk) return { error: 'No webpackChunk found on page' };
+              var fakeId = '__plinth_builder_' + Date.now();
+              mainChunk.push([[fakeId], {
+                [fakeId]: function(m, e, req) { captured = req; }
+              }, function(rt) { if (rt) rt(fakeId); }]);
+              if (!captured) return { error: 'Failed to capture __webpack_require__' };
+              window.__plinthRequire = captured;
+            }
+            var r = window.__plinthRequire;
+            var expressions = r(629107);
+            var exprCtors = r(953932);
+            var treeOps = r(591280);
+            var Expr = expressions.Expressions;
+            var Component = expressions.Component;
+            var EC = exprCtors;
+
+            // Get body element
+            var dsState = window._webflow?.state?.DesignerStore;
+            if (!dsState) return { error: 'DesignerStore not found' };
+            var tgb = treeOps.tgb;
+            var pageComp = dsState.components.get(tgb);
+            var pageRender = Component.getRender(pageComp);
+            var bodyEl = Expr.getElement(pageRender);
+            var bodyId = bodyEl?.id;
+            if (!bodyId) return { error: 'Body element not found' };
+
+            var childrenList = bodyEl?.data?.val?.children?.val;
+            var beforeCount = childrenList?.length || childrenList?.size || 0;
+
+            // Generate IDs
+            var uuid = crypto.randomUUID();
+            var styleId = crypto.randomUUID();
+            var textUuid = crypto.randomUUID();
+
+            // Build element data based on type
+            var dataFields = {};
+            ${dataFieldsCode}
+
+            var element = EC.EElement({
+              id: uuid,
+              type: ${config.type},
+              data: EC.ERecord(dataFields)
+            });
+
+            var rawElement = Expr.getElement(element);
+            if (!rawElement) return { error: 'Failed to unwrap element' };
+
+            // Determine anchor
+            var anchorId = bodyId;
+            var pos = ${JSON.stringify(position)};
+            if (pos === 'after' && childrenList) {
+              var len = childrenList.length || childrenList.size || 0;
+              if (len > 0) {
+                var last = childrenList[len - 1] || (typeof childrenList.get === 'function' ? childrenList.get(len - 1) : null);
+                anchorId = last?.val?.id || bodyId;
+                pos = 'after';
+              } else {
+                pos = 'append';
+              }
+            } else {
+              pos = 'append';
+            }
+
+            // Build idMap
+            var idMap = {};
+            idMap[${JSON.stringify(idMapKey)}] = uuid;
+
+            // Dispatch
+            window._webflow.dispatch({
+              type: 'ELEMENT_ADDED',
+              payload: {
+                anchorId: anchorId,
+                nativeId: uuid,
+                position: pos,
+                anchorPath: null,
+                elementPreset: ${config.preset},
+                initialStyleBlockId: styleId,
+                styleBlockState: window._webflow?.state?.StyleBlockStore,
+                designerState: dsState,
+                uiNodeState: window._webflow?.state?.UiNodeStore,
+                element: rawElement,
+                idMap: idMap,
+                assetsToImport: [],
+                componentMapPatch: null
+              }
+            });
+
+            // Verify
+            var pageComp2 = window._webflow?.state?.DesignerStore?.components?.get(tgb);
+            var pageRender2 = pageComp2 ? Component.getRender(pageComp2) : null;
+            var bodyEl2 = pageRender2 ? Expr.getElement(pageRender2) : null;
+            var children2 = bodyEl2?.data?.val?.children?.val;
+            var afterCount = children2?.length || children2?.size || 0;
+
+            return {
+              success: afterCount > beforeCount,
+              elementId: uuid,
+              styleBlockId: styleId,
+              beforeCount: beforeCount,
+              afterCount: afterCount,
+              type: ${JSON.stringify(elType)},
+              position: pos,
+              anchorId: anchorId
+            };
+          } catch(e) {
+            return { error: e.message, stack: e.stack?.slice(0, 500) };
+          }
+        })()
+      `;
+
+      const result = await evalInPage(code);
+
+      if (result.error) {
+        builderOutput.innerHTML = `<span class="error">Error: ${escHtml(result.error)}</span>`;
+        if (result.stack) builderOutput.innerHTML += `<pre style="font-size:9px;color:#f88">${escHtml(result.stack)}</pre>`;
+      } else if (result.success) {
+        builderOutput.innerHTML = `<span class="success">${escHtml(elType)} added! ID: ${result.elementId} (${result.beforeCount}\u2192${result.afterCount} children)</span>`;
+      } else {
+        builderOutput.innerHTML = `<span class="error">${escHtml(elType)} dispatch completed but child count unchanged (${result.beforeCount}\u2192${result.afterCount})</span>`;
+        builderOutput.innerHTML += `<pre style="font-size:10px">${escHtml(formatJson(result))}</pre>`;
+      }
+    } catch (err) {
+      builderOutput.innerHTML = `<span class="error">Error: ${escHtml(err.message)}</span>`;
+    }
+  });
+
+  function getDefaultText(elType) {
+    switch (elType) {
+      case 'Heading': return 'Heading';
+      case 'Paragraph': return 'Lorem ipsum dolor sit amet, consectetur adipiscing elit.';
+      case 'Button': return 'Button Text';
+      case 'TextBlock': return 'Text block content';
+      default: return '';
+    }
+  }
+
+  function getIdMapKey(elType) {
+    switch (elType) {
+      case 'DivBlock': return 'Div Block';
+      case 'TextBlock': return 'TextBlock';
+      case 'HFlex': return 'HFlex';
+      case 'VFlex': return 'VFlex';
+      case 'LinkBlock': case 'Link': return 'Link Block';
+      default: return elType;
+    }
+  }
+
+  function buildDataFieldsCode(config, headingLevel, escapedText) {
+    // Generates JS code string that builds dataFields inside the eval context
+    const lines = [];
+
+    if (config.tag === null && config.type.includes('Heading')) {
+      // Heading — tag depends on level
+      lines.push(`dataFields.tag = EC.EEnum('h${headingLevel}');`);
+    } else if (config.tag) {
+      lines.push(`dataFields.tag = EC.EEnum('${config.tag}');`);
+    }
+
+    if (config.hasText !== undefined) {
+      lines.push(`dataFields.text = EC.EBoolean(${config.hasText});`);
+    }
+
+    if (config.isButton) {
+      lines.push(`dataFields.button = EC.EBoolean(true);`);
+      lines.push(`dataFields.block = EC.EText('');`);
+      lines.push(`dataFields.search = EC.ERecord({ exclude: EC.EBoolean(true) });`);
+      lines.push(`dataFields.eventIds = EC.EList([]);`);
+      lines.push(`dataFields.link = EC.ELiteral({ name: ['Basic','Link'], value: { mode: 'external', url: '#' } });`);
+    }
+
+    if (config.hasChildren) {
+      if (config.hasTextChild) {
+        lines.push(`var textContent = ${escapedText};`);
+        lines.push(`if (textContent) {`);
+        lines.push(`  dataFields.children = EC.EList([`);
+        lines.push(`    EC.EElement({ id: textUuid, type: ['Basic','String'], data: EC.EText(textContent) })`);
+        lines.push(`  ]);`);
+        lines.push(`} else {`);
+        lines.push(`  dataFields.children = EC.EList([]);`);
+        lines.push(`}`);
+      } else {
+        lines.push(`dataFields.children = EC.EList([]);`);
+      }
+    }
+
+    // Section needs grid data
+    if (config.tag === 'section') {
+      lines.push(`dataFields.grid = EC.ERecord({ type: EC.EText('section') });`);
+    }
+
+    return lines.join('\n            ');
+  }
+
   // Validate WFDL — test a string without adding to canvas
   $('#btn-validate-wfdl').addEventListener('click', async () => {
     // Use the snapshot paste textarea for input

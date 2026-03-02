@@ -61,6 +61,41 @@
       <span id="lab-status" class="export-status"></span>
     </div>
     <div id="elements-output" class="output"></div>
+
+    <!-- Builder: Add elements via ELEMENT_ADDED dispatch -->
+    <div class="builder-section">
+      <div class="toolbar" style="border-top:1px solid #444;padding-top:8px;margin-top:8px">
+        <strong style="color:#8f8;margin-right:8px">Builder</strong>
+        <select id="builder-type">
+          <option value="Section">Section</option>
+          <option value="DivBlock" selected>DivBlock</option>
+          <option value="Heading">Heading</option>
+          <option value="Paragraph">Paragraph</option>
+          <option value="Button">Button</option>
+          <option value="TextBlock">TextBlock</option>
+          <option value="HFlex">HFlex</option>
+          <option value="VFlex">VFlex</option>
+          <option value="Grid">Grid</option>
+          <option value="Link">Link</option>
+        </select>
+        <select id="builder-heading-level" style="width:50px;display:none">
+          <option value="1">H1</option>
+          <option value="2">H2</option>
+          <option value="3">H3</option>
+          <option value="4">H4</option>
+          <option value="5">H5</option>
+          <option value="6">H6</option>
+        </select>
+        <input type="text" id="builder-text" placeholder="Text content (optional)" class="search-input" style="flex:1">
+        <select id="builder-position">
+          <option value="append">Append to body</option>
+          <option value="after">After last child</option>
+        </select>
+        <button id="btn-builder-add" style="background:#2a4a2a;color:#8f8">Add Element</button>
+      </div>
+      <div id="builder-output" class="output" style="min-height:30px"></div>
+    </div>
+
     <div class="paste-section">
       <label for="snapshot-paste">Paste get_page_snapshot output:</label>
       <textarea id="snapshot-paste" rows="6" placeholder="Paste snapshot text here..."></textarea>
