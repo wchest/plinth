@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <link rel="stylesheet" href="panel.css">
+</head>
+<body>
+  <nav class="tabs">
+    <button class="tab active" data-tab="globals">Globals</button>
+    <button class="tab" data-tab="messages">Messages</button>
+    <button class="tab" data-tab="elements">Elements</button>
+    <button class="tab" data-tab="presets">Presets</button>
+  </nav>
+
+  <!-- Tab: Globals -->
+  <div id="tab-globals" class="tab-content active">
+    <div class="toolbar">
+      <button id="btn-scan-window">Scan Window</button>
+      <button id="btn-find-react">Find React Roots</button>
+    </div>
+    <div id="globals-output" class="output"></div>
+  </div>
+
+  <!-- Tab: Messages -->
+  <div id="tab-messages" class="tab-content">
+    <div class="toolbar">
+      <label><input type="checkbox" id="filter-designer-to-ext" checked> Designer → Ext</label>
+      <label><input type="checkbox" id="filter-ext-to-designer" checked> Ext → Designer</label>
+      <input type="text" id="msg-search" placeholder="Filter by method..." class="search-input">
+      <button id="btn-msg-pause">Pause</button>
+      <button id="btn-msg-clear">Clear</button>
+    </div>
+    <div id="messages-list" class="output messages-output"></div>
+    <div id="messages-status" class="status-bar">0 messages</div>
+  </div>
+
+  <!-- Tab: Elements -->
+  <div id="tab-elements" class="tab-content">
+    <div class="toolbar">
+      <button id="btn-dump-elements">Dump All Elements</button>
+      <button id="btn-inspect-selected">Inspect Selected</button>
+    </div>
+    <div id="elements-output" class="output"></div>
+    <div class="paste-section">
+      <label for="snapshot-paste">Paste get_page_snapshot output:</label>
+      <textarea id="snapshot-paste" rows="6" placeholder="Paste snapshot text here..."></textarea>
+      <button id="btn-parse-snapshot">Parse Snapshot</button>
+    </div>
+    <div id="snapshot-output" class="output"></div>
+  </div>
+
+  <!-- Tab: Presets -->
+  <div id="tab-presets" class="tab-content">
+    <div class="toolbar">
+      <button id="btn-list-presets">List All Presets</button>
+      <select id="preset-select"><option value="">— select preset —</option></select>
+      <button id="btn-create-preset">Create & Inspect</button>
+    </div>
+    <div id="presets-output" class="output"></div>
+  </div>
+
+  <script src="panel.js"></script>
+</body>
+</html>
