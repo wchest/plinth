@@ -16,6 +16,53 @@
     });
   }
 
+  // Async eval — runs async code in page context by writing result to a temp global
+  // inspectedWindow.eval can't return promises, so we poll for the result
+  let _asyncEvalId = 0;
+  function evalInPageAsync(code, timeoutMs = 30000) {
+    const id = '__plinthAsync_' + (++_asyncEvalId);
+    const wrappedCode = `
+      (function() {
+        window['${id}'] = { status: 'pending' };
+        (${code})().then(function(r) {
+          window['${id}'] = { status: 'done', result: r };
+        }).catch(function(e) {
+          window['${id}'] = { status: 'error', error: e.message || String(e) };
+        });
+        return 'started';
+      })()
+    `;
+    return new Promise(async (resolve, reject) => {
+      try {
+        await evalInPage(wrappedCode);
+      } catch (e) {
+        return reject(e);
+      }
+      const start = Date.now();
+      const poll = setInterval(async () => {
+        try {
+          const state = await evalInPage(`window['${id}']`);
+          if (state && state.status === 'done') {
+            clearInterval(poll);
+            evalInPage(`delete window['${id}']`);
+            resolve(state.result);
+          } else if (state && state.status === 'error') {
+            clearInterval(poll);
+            evalInPage(`delete window['${id}']`);
+            reject(new Error(state.error));
+          } else if (Date.now() - start > timeoutMs) {
+            clearInterval(poll);
+            evalInPage(`delete window['${id}']`);
+            reject(new Error('Async eval timeout'));
+          }
+        } catch (e) {
+          clearInterval(poll);
+          reject(e);
+        }
+      }, 500);
+    });
+  }
+
   function $(sel) { return document.querySelector(sel); }
   function $$(sel) { return document.querySelectorAll(sel); }
 
@@ -196,6 +243,519 @@
         html += '</div>';
       }
       globalsOutput.innerHTML = html;
+    } catch (err) {
+      globalsOutput.innerHTML = `<span class="error">Error: ${escHtml(err.message)}</span>`;
+    }
+  });
+
+  // ── Deep Probe ──────────────────────────────────────────────────────
+
+  $('#btn-deep-probe').addEventListener('click', async () => {
+    globalsOutput.innerHTML = '<span class="info">Running deep probe...</span>';
+    try {
+      const code = `
+        (function() {
+          var report = {};
+
+          // ── window.wf ──
+          try {
+            var wf = window.wf;
+            if (wf) {
+              var wfReport = { _type: typeof wf, _ctor: wf.constructor ? wf.constructor.name : '?' };
+              Object.keys(wf).forEach(function(k) {
+                try {
+                  var v = wf[k];
+                  var t = typeof v;
+                  if (t === 'function') {
+                    // Extract function signature from toString
+                    var src = v.toString();
+                    var sig = src.slice(0, 200);
+                    // Try to get param names
+                    var match = sig.match(/^(?:function\\s*\\w*)?\\s*\\(([^)]*)\\)/);
+                    var params = match ? match[1] : '(?)';
+                    wfReport[k] = { type: 'function', params: params, source: src.slice(0, 500) };
+                  } else if (t === 'object' && v !== null) {
+                    var keys = [];
+                    try { keys = Object.keys(v).slice(0, 30); } catch(e) {}
+                    var ctor = v.constructor ? v.constructor.name : 'Object';
+                    wfReport[k] = { type: ctor, keys: keys };
+                    // If it's small, try to serialize
+                    if (keys.length < 10) {
+                      try { wfReport[k].value = JSON.parse(JSON.stringify(v)); } catch(e) {}
+                    }
+                  } else {
+                    wfReport[k] = { type: t, value: v };
+                  }
+                } catch(e) {
+                  wfReport[k] = { error: e.message };
+                }
+              });
+              // Also check prototype methods
+              var proto = Object.getPrototypeOf(wf);
+              if (proto && proto !== Object.prototype) {
+                var protoMethods = [];
+                Object.getOwnPropertyNames(proto).forEach(function(k) {
+                  if (k !== 'constructor' && typeof proto[k] === 'function') protoMethods.push(k);
+                });
+                if (protoMethods.length > 0) wfReport._protoMethods = protoMethods;
+              }
+              report['window.wf'] = wfReport;
+            }
+          } catch(e) { report['window.wf'] = { error: e.message }; }
+
+          // ── window._webflow (Flux store) ──
+          try {
+            var flux = window._webflow;
+            if (flux) {
+              var fluxReport = { _type: typeof flux, _ctor: flux.constructor ? flux.constructor.name : '?' };
+              var fluxKeys = Object.keys(flux);
+              fluxReport._topKeys = fluxKeys.slice(0, 50);
+              // Check for common Flux/Redux patterns
+              ['getState', 'dispatch', 'subscribe', 'getStore', 'store'].forEach(function(m) {
+                if (typeof flux[m] === 'function') {
+                  fluxReport[m] = 'function';
+                  // If getState, try calling it
+                  if (m === 'getState') {
+                    try {
+                      var state = flux.getState();
+                      var stateKeys = Object.keys(state).slice(0, 40);
+                      fluxReport._stateKeys = stateKeys;
+                      // Sample a few small state slices
+                      stateKeys.slice(0, 5).forEach(function(sk) {
+                        try {
+                          var sv = state[sk];
+                          var svType = typeof sv;
+                          if (svType === 'object' && sv !== null) {
+                            fluxReport['state.' + sk] = { type: sv.constructor ? sv.constructor.name : 'Object', keys: Object.keys(sv).slice(0, 20) };
+                          } else {
+                            fluxReport['state.' + sk] = { type: svType, value: sv };
+                          }
+                        } catch(e) {}
+                      });
+                    } catch(e) { fluxReport._stateError = e.message; }
+                  }
+                } else if (flux[m] !== undefined) {
+                  fluxReport[m] = typeof flux[m];
+                }
+              });
+              // Check for store property
+              if (flux.store && typeof flux.store === 'object') {
+                var storeKeys = [];
+                try { storeKeys = Object.keys(flux.store).slice(0, 30); } catch(e) {}
+                fluxReport._storeKeys = storeKeys;
+              }
+              // Check prototype
+              var fluxProto = Object.getPrototypeOf(flux);
+              if (fluxProto && fluxProto !== Object.prototype) {
+                var fluxMethods = [];
+                Object.getOwnPropertyNames(fluxProto).forEach(function(k) {
+                  if (k !== 'constructor' && typeof fluxProto[k] === 'function') fluxMethods.push(k);
+                });
+                if (fluxMethods.length > 0) fluxReport._protoMethods = fluxMethods;
+              }
+              report['window._webflow'] = fluxReport;
+            }
+          } catch(e) { report['window._webflow'] = { error: e.message }; }
+
+          // ── window.wfenvironment ──
+          try {
+            var env = window.wfenvironment;
+            if (env) {
+              try {
+                report['window.wfenvironment'] = JSON.parse(JSON.stringify(env));
+              } catch(e) {
+                report['window.wfenvironment'] = { keys: Object.keys(env).slice(0, 30), error: 'not serializable' };
+              }
+            }
+          } catch(e) { report['window.wfenvironment'] = { error: e.message }; }
+
+          // ── window.webflowInitialData ──
+          try {
+            var init = window.webflowInitialData;
+            if (init) {
+              var initReport = { _keys: Object.keys(init).slice(0, 30) };
+              // Sample top-level values
+              Object.keys(init).slice(0, 15).forEach(function(k) {
+                try {
+                  var v = init[k];
+                  var t = typeof v;
+                  if (t === 'object' && v !== null) {
+                    var ctor = v.constructor ? v.constructor.name : 'Object';
+                    var subKeys = Object.keys(v).slice(0, 20);
+                    initReport[k] = { type: ctor, keys: subKeys };
+                  } else if (t === 'string' && v.length > 200) {
+                    initReport[k] = { type: 'string', length: v.length, preview: v.slice(0, 200) };
+                  } else {
+                    initReport[k] = { type: t, value: v };
+                  }
+                } catch(e) {
+                  initReport[k] = { error: e.message };
+                }
+              });
+              report['window.webflowInitialData'] = initReport;
+            }
+          } catch(e) { report['window.webflowInitialData'] = { error: e.message }; }
+
+          // ── Bonus: look for element/node registries on window ──
+          try {
+            var registries = {};
+            Object.getOwnPropertyNames(window).forEach(function(k) {
+              if (/element|node|component|store|redux|dispatch|action/i.test(k)) {
+                try {
+                  var v = window[k];
+                  if (v !== undefined && v !== null && typeof v !== 'string' && typeof v !== 'number' && typeof v !== 'boolean') {
+                    var t = typeof v;
+                    if (t === 'function') {
+                      registries[k] = 'function(' + (v.length || 0) + ' params)';
+                    } else if (t === 'object') {
+                      registries[k] = (v.constructor ? v.constructor.name : 'Object') + ' {' + Object.keys(v).slice(0, 10).join(', ') + '}';
+                    }
+                  }
+                } catch(e) {}
+              }
+            });
+            if (Object.keys(registries).length > 0) {
+              report['_registries'] = registries;
+            }
+          } catch(e) {}
+
+          return report;
+        })()
+      `;
+
+      const report = await evalInPage(code);
+      findings.deepProbe = report;
+
+      let html = '';
+      for (const [section, data] of Object.entries(report)) {
+        html += `<div class="kv-row" style="margin-top:12px"><span class="kv-key" style="font-size:13px;font-weight:bold">${escHtml(section)}</span></div>`;
+        html += renderDeepProbeSection(data, 1);
+      }
+      globalsOutput.innerHTML = html;
+    } catch (err) {
+      globalsOutput.innerHTML = `<span class="error">Error: ${escHtml(err.message)}</span>`;
+    }
+  });
+
+  function renderDeepProbeSection(data, depth) {
+    if (!data || typeof data !== 'object') {
+      return `<div class="kv-row" style="padding-left:${depth * 16}px"><span class="kv-val">${escHtml(String(data))}</span></div>`;
+    }
+    let html = '';
+    for (const [key, val] of Object.entries(data)) {
+      html += `<div class="kv-row" style="padding-left:${depth * 16}px">`;
+      html += `<span class="kv-key">${escHtml(key)}</span>: `;
+      if (val === null || val === undefined) {
+        html += `<span class="info">null</span>`;
+      } else if (typeof val === 'string') {
+        html += `<span class="kv-val">${escHtml(val)}</span>`;
+      } else if (typeof val === 'number' || typeof val === 'boolean') {
+        html += `<span class="kv-type">${val}</span>`;
+      } else if (Array.isArray(val)) {
+        html += `<span class="kv-keys">[${val.map(v => escHtml(String(v))).join(', ')}]</span>`;
+      } else if (typeof val === 'object') {
+        // Check if it's a leaf-like object (type + value/params/source)
+        if (val.type === 'function' && val.source) {
+          html += `<span class="kv-type">fn(${escHtml(val.params || '?')})</span>`;
+          html += `</div>`;
+          html += `<div class="kv-row" style="padding-left:${(depth + 1) * 16}px">`;
+          html += `<span class="info" style="white-space:pre-wrap;font-size:10px">${escHtml(val.source)}</span>`;
+        } else if (val.type && val.keys) {
+          html += `<span class="kv-type">${escHtml(val.type)}</span> { <span class="kv-keys">${val.keys.map(k => escHtml(k)).join(', ')}</span> }`;
+          if (val.value !== undefined) {
+            html += `</div>`;
+            html += `<div class="kv-row" style="padding-left:${(depth + 1) * 16}px">`;
+            html += `<span class="info" style="white-space:pre-wrap;font-size:10px">${escHtml(formatJson(val.value))}</span>`;
+          }
+        } else if (val.type && val.value !== undefined) {
+          html += `<span class="kv-type">${escHtml(val.type)}</span> = <span class="kv-val">${escHtml(String(val.value))}</span>`;
+        } else if (val.error) {
+          html += `<span class="error">${escHtml(val.error)}</span>`;
+        } else {
+          // Recurse for nested objects
+          html += `</div>`;
+          html += renderDeepProbeSection(val, depth + 1);
+          continue;
+        }
+      }
+      html += `</div>`;
+    }
+    return html;
+  }
+
+  // ── WFDL Playground Probe ────────────────────────────────────────────
+
+  $('#btn-whtml-playground').addEventListener('click', async () => {
+    globalsOutput.innerHTML = '<span class="info">Probing WFDL/WHTML playground and dispatch system...</span>';
+    try {
+      const code = `
+        (function() {
+          var result = {};
+
+          // 1. AssistantStore deep inspection
+          try {
+            var as = window._webflow.state.AssistantStore;
+            if (as) {
+              var asData = typeof as.toJSON === 'function' ? as.toJSON() : as;
+              result.assistantStore = {};
+              Object.keys(asData).forEach(function(k) {
+                var v = asData[k];
+                if (v === null || v === undefined) { result.assistantStore[k] = v; return; }
+                if (typeof v === 'object') {
+                  if (Array.isArray(v)) result.assistantStore[k] = { type: 'array', length: v.length };
+                  else result.assistantStore[k] = { type: 'object', keys: Object.keys(v).slice(0, 10), keyCount: Object.keys(v).length };
+                } else {
+                  result.assistantStore[k] = v;
+                }
+              });
+            }
+          } catch(e) { result.assistantStoreError = e.message; }
+
+          // 2. Find dispatch and action types
+          try {
+            var wb = window._webflow;
+            result.dispatchType = typeof wb.dispatch;
+
+            // Try to find action creators / constants by searching for "playground" in the dispatch system
+            // Look at the dispatch function signature
+            if (typeof wb.dispatch === 'function') {
+              result.dispatchArity = wb.dispatch.length;
+              result.dispatchStr = wb.dispatch.toString().slice(0, 300);
+            }
+
+            // Try dispatching to open the playground
+            // First, try common Flux action patterns
+            var actionPatterns = [
+              { type: 'SET_WHTML_PLAYGROUND_IS_OPEN', payload: true },
+              { type: 'TOGGLE_WHTML_PLAYGROUND' },
+              { type: 'OPEN_WHTML_PLAYGROUND' },
+              { type: 'SET_ASSISTANT_STATE', key: 'whtmlPlaygroundIsOpen', value: true },
+              { actionType: 'SET_WHTML_PLAYGROUND_IS_OPEN', data: true },
+              { actionType: 'TOGGLE_WHTML_PLAYGROUND' },
+            ];
+
+            // Don't dispatch yet — just report the patterns we'll try
+            result.actionPatternsToTry = actionPatterns.length;
+          } catch(e) { result.dispatchError = e.message; }
+
+          // 3. Search for playground-related strings in loaded scripts
+          try {
+            var playgroundHits = [];
+            // Check if there's a global reference to whtml/playground
+            var searchKeys = ['whtml', 'whtmlPlayground', 'WHTML', 'playground', 'addToCanvas'];
+            searchKeys.forEach(function(key) {
+              // Search in _webflow's action types or constants
+              if (window.__wf_actions) {
+                Object.keys(window.__wf_actions).forEach(function(k) {
+                  if (k.toLowerCase().indexOf(key.toLowerCase()) >= 0) {
+                    playgroundHits.push('__wf_actions.' + k);
+                  }
+                });
+              }
+            });
+
+            // Check if AssistantStore has actionHandlers or registered reducers
+            var as = window._webflow.state.AssistantStore;
+            if (as) {
+              var proto = Object.getPrototypeOf(as);
+              if (proto && proto !== Object.prototype) {
+                var protoMethods = Object.getOwnPropertyNames(proto).filter(function(k) { return typeof proto[k] === 'function'; });
+                result.assistantStoreProtoMethods = protoMethods;
+              }
+            }
+
+            if (playgroundHits.length > 0) result.playgroundHits = playgroundHits;
+          } catch(e) { result.searchError = e.message; }
+
+          // 4. Try to find the Flux dispatcher and its registered callbacks
+          try {
+            var wb = window._webflow;
+            // Common Flux dispatcher patterns
+            var dispInfo = {};
+
+            // Check if there's a registered dispatcher
+            if (wb._dispatcher || wb.dispatcher || wb.Dispatcher) {
+              var d = wb._dispatcher || wb.dispatcher || wb.Dispatcher;
+              dispInfo.found = true;
+              dispInfo.type = typeof d;
+              dispInfo.keys = Object.keys(d).slice(0, 15);
+              if (d._callbacks) dispInfo.callbackCount = Object.keys(d._callbacks).length;
+              if (d._actionHandlers) dispInfo.actionHandlers = Object.keys(d._actionHandlers).slice(0, 30);
+            }
+
+            // Check if _webflow has getDispatcher or similar
+            ['getDispatcher', 'getStore', 'getActions', 'getActionTypes', 'actionTypes'].forEach(function(m) {
+              if (typeof wb[m] === 'function') {
+                try {
+                  var r = wb[m]();
+                  dispInfo[m] = typeof r === 'object' ? Object.keys(r).slice(0, 20) : typeof r;
+                } catch(e) { dispInfo[m] = 'error: ' + e.message; }
+              } else if (wb[m] && typeof wb[m] === 'object') {
+                dispInfo[m] = Object.keys(wb[m]).slice(0, 20);
+              }
+            });
+
+            // Try direct property access on _webflow for action-related keys
+            Object.keys(wb).forEach(function(k) {
+              if (/action|dispatch|store|reduce|flux/i.test(k)) {
+                dispInfo['wb.' + k] = typeof wb[k];
+              }
+            });
+
+            result.dispatcher = dispInfo;
+          } catch(e) { result.dispatcherError = e.message; }
+
+          // 5. Search reducer source for playground action types
+          try {
+            var wb = window._webflow;
+            var reducerSrc = wb.reducer.toString();
+
+            // Search for playground/whtml in reducer source
+            var playgroundMatches = [];
+            var searchTerms = ['playground', 'whtml', 'Playground', 'WHTML', 'whtmlPlayground'];
+            searchTerms.forEach(function(term) {
+              var idx = reducerSrc.indexOf(term);
+              if (idx >= 0) {
+                // Extract surrounding context (100 chars before and after)
+                var start = Math.max(0, idx - 100);
+                var end = Math.min(reducerSrc.length, idx + term.length + 100);
+                playgroundMatches.push({
+                  term: term,
+                  position: idx,
+                  context: reducerSrc.slice(start, end)
+                });
+              }
+            });
+            result.reducerPlaygroundMatches = playgroundMatches;
+            result.reducerLength = reducerSrc.length;
+
+            // Also check lastAction shape for clue about dispatch format
+            if (wb.lastAction) {
+              var la = wb.lastAction;
+              result.lastAction = {
+                keys: Object.keys(la).slice(0, 15),
+                type: la.type,
+                actionType: la.actionType,
+                preview: JSON.stringify(la).slice(0, 300)
+              };
+            }
+
+            // Check _dispatch source for action shape clues
+            if (typeof wb._dispatch === 'function') {
+              result._dispatchSource = wb._dispatch.toString().slice(0, 500);
+            }
+
+            // Search stores object for AssistantStore handlers
+            if (wb.stores) {
+              var storeKeys = Object.keys(wb.stores);
+              result.storeCount = storeKeys.length;
+              // Find assistant store
+              var assistantIdx = storeKeys.findIndex(function(k) { return /assistant/i.test(k); });
+              if (assistantIdx >= 0) {
+                var aStore = wb.stores[storeKeys[assistantIdx]];
+                result.assistantStoreEntry = {
+                  key: storeKeys[assistantIdx],
+                  type: typeof aStore,
+                  keys: typeof aStore === 'object' ? Object.keys(aStore).slice(0, 20) : [],
+                  source: typeof aStore === 'function' ? aStore.toString().slice(0, 500) : null
+                };
+              }
+            }
+          } catch(e) { result.reducerSearchError = e.message; }
+
+          // 6. Try to open playground with correct action shapes
+          try {
+            var wb = window._webflow;
+
+            // Check lastAction to learn action shape
+            var actionShapes = [];
+            if (wb.lastAction) {
+              actionShapes.push('lastAction keys: ' + Object.keys(wb.lastAction).join(', '));
+            }
+
+            // Try common patterns based on what we know about the reducer
+            var attempts = [];
+            var patterns = [
+              { type: 'TOGGLE_WHTML_PLAYGROUND' },
+              { type: 'OPEN_WHTML_PLAYGROUND' },
+              { type: 'SET_WHTML_PLAYGROUND_IS_OPEN', value: true },
+              { type: 'SET_WHTML_PLAYGROUND_IS_OPEN', payload: { isOpen: true } },
+              { type: 'ASSISTANT_SET_WHTML_PLAYGROUND_IS_OPEN', payload: true },
+              { type: 'assistant/setWhtmlPlaygroundIsOpen', payload: true },
+              { type: 'SET_ASSISTANT_STATE', payload: { whtmlPlaygroundIsOpen: true } },
+            ];
+
+            patterns.forEach(function(action) {
+              try {
+                wb.dispatch(action);
+                var state = wb.state.AssistantStore;
+                var data = typeof state.toJSON === 'function' ? state.toJSON() : state;
+                attempts.push({ action: action.type, isOpen: data.whtmlPlaygroundIsOpen });
+              } catch(e) {
+                attempts.push({ action: action.type, error: e.message });
+              }
+            });
+
+            result.dispatchAttempts = attempts;
+            result.playgroundOpenAfterDispatch = attempts.some(function(a) { return a.isOpen === true; });
+          } catch(e) { result.openAttemptError = e.message; }
+
+          // 7. Probe the wf.addToCanvas function for clues
+          try {
+            var addFn = window.wf.addToCanvas;
+            result.addToCanvas = {
+              arity: addFn.length,
+              source: addFn.toString().slice(0, 800),
+              name: addFn.name
+            };
+          } catch(e) { result.addToCanvasError = e.message; }
+
+          // 8. Also get more of addToCanvas — the full source
+          try {
+            var src = window.wf.addToCanvas.toString();
+            result.addToCanvasFull = src.length > 800 ? src.slice(800, 1600) : '(already fully captured)';
+            result.addToCanvasLength = src.length;
+          } catch(e) {}
+
+          // 9. Check for any DOM elements with "playground" or "whtml" in the current page
+          try {
+            var domHits = [];
+            document.querySelectorAll('[class*="playground"], [class*="whtml"], [class*="Playground"], [id*="playground"], [id*="whtml"], [data-automation-id*="playground"], [data-automation-id*="whtml"]').forEach(function(el) {
+              domHits.push({
+                tag: el.tagName.toLowerCase(),
+                id: el.id || null,
+                className: (el.className || '').toString().slice(0, 100),
+                visible: el.offsetParent !== null,
+                innerHTML: el.innerHTML.slice(0, 200)
+              });
+            });
+            if (domHits.length > 0) result.playgroundDomElements = domHits;
+          } catch(e) {}
+
+          return result;
+        })()
+      `;
+
+      const result = await evalInPage(code);
+      findings.whtmlPlayground = result;
+
+      const json = formatJson(result);
+      let html = `<div class="success">WFDL Playground probe complete</div>`;
+      html += `<div style="margin:8px 0">`;
+      html += `<button id="btn-download-playground">Download playground-probe.json</button>`;
+      html += `</div>`;
+      html += `<pre style="max-height:600px;overflow:auto;font-size:10px">${escHtml(json)}</pre>`;
+      globalsOutput.innerHTML = html;
+
+      document.getElementById('btn-download-playground')?.addEventListener('click', () => {
+        const blob = new Blob([json], { type: 'application/json' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = 'playground-probe.json';
+        a.click();
+        URL.revokeObjectURL(url);
+      });
     } catch (err) {
       globalsOutput.innerHTML = `<span class="error">Error: ${escHtml(err.message)}</span>`;
     }
@@ -471,6 +1031,1075 @@
     }
   });
 
+  // ── WFDL Lab ────────────────────────────────────────────────────────
+
+  const labStatus = $('#lab-status');
+
+  // WFDL uses CSS-like curly-brace syntax: Type { children }
+  // Text is quoted strings. Confirmed: "Section { Container { Heading { "Hello" } } }" is valid.
+  const WFDL_ELEMENTS = [
+    // ── Element types (bare) ──
+    { name: 'div', wfdl: 'div { }' },
+    { name: 'section', wfdl: 'section { }' },
+    { name: 'container', wfdl: 'container { }' },
+    { name: 'block', wfdl: 'block { }' },
+    { name: 'grid', wfdl: 'grid { }' },
+    { name: 'hflex', wfdl: 'hflex { }' },
+    { name: 'vflex', wfdl: 'vflex { }' },
+    { name: 'columns', wfdl: 'columns { }' },
+    { name: 'column', wfdl: 'column { }' },
+    { name: 'row', wfdl: 'row { }' },
+    { name: 'quickstack', wfdl: 'quickstack { }' },
+    // Text elements
+    { name: 'heading', wfdl: 'heading { "Hello" }' },
+    { name: 'Heading', wfdl: 'Heading { "Hello" }' },
+    { name: 'h1', wfdl: 'h1 { "Hello" }' },
+    { name: 'h2', wfdl: 'h2 { "Hello" }' },
+    { name: 'h3', wfdl: 'h3 { "Hello" }' },
+    { name: 'paragraph', wfdl: 'paragraph { "Text" }' },
+    { name: 'p', wfdl: 'p { "Text" }' },
+    { name: 'text', wfdl: 'text { "Hello" }' },
+    { name: 'textblock', wfdl: 'textblock { "Hello" }' },
+    { name: 'TextBlock', wfdl: 'TextBlock { "Hello" }' },
+    { name: 'richtext', wfdl: 'richtext { }' },
+    { name: 'span', wfdl: 'span { "Text" }' },
+    { name: 'strong', wfdl: 'strong { "Bold" }' },
+    { name: 'em', wfdl: 'em { "Italic" }' },
+    { name: 'blockquote', wfdl: 'blockquote { "Quote" }' },
+    // Links / Interactive
+    { name: 'link', wfdl: 'link { "Click" }' },
+    { name: 'a', wfdl: 'a { "Click" }' },
+    { name: 'linkblock', wfdl: 'linkblock { }' },
+    { name: 'button', wfdl: 'button { "Click" }' },
+    { name: 'image', wfdl: 'image { }' },
+    { name: 'img', wfdl: 'img { }' },
+    { name: 'video', wfdl: 'video { }' },
+    { name: 'htmlembed', wfdl: 'htmlembed { }' },
+    // Lists
+    { name: 'list', wfdl: 'list { }' },
+    { name: 'listitem', wfdl: 'listitem { }' },
+    { name: 'ul', wfdl: 'ul { }' },
+    { name: 'ol', wfdl: 'ol { }' },
+    { name: 'li', wfdl: 'li { }' },
+    // Form
+    { name: 'form', wfdl: 'form { }' },
+    { name: 'formblock', wfdl: 'formblock { }' },
+    { name: 'input', wfdl: 'input { }' },
+    { name: 'textarea', wfdl: 'textarea { }' },
+    { name: 'select', wfdl: 'select { }' },
+    // Nav
+    { name: 'navbar', wfdl: 'navbar { }' },
+    { name: 'navbarwrapper', wfdl: 'navbarwrapper { }' },
+    // Slider
+    { name: 'slider', wfdl: 'slider { }' },
+    { name: 'sliderwrapper', wfdl: 'sliderwrapper { }' },
+    // Tabs
+    { name: 'tabs', wfdl: 'tabs { }' },
+    { name: 'tabwrapper', wfdl: 'tabwrapper { }' },
+    // Dropdown
+    { name: 'dropdown', wfdl: 'dropdown { }' },
+    { name: 'dropdownwrapper', wfdl: 'dropdownwrapper { }' },
+    // Lightbox
+    { name: 'lightbox', wfdl: 'lightbox { }' },
+    { name: 'lightboxwrapper', wfdl: 'lightboxwrapper { }' },
+    // Table
+    { name: 'table', wfdl: 'table { }' },
+    { name: 'tablewrapper', wfdl: 'tablewrapper { }' },
+    // Media
+    { name: 'youtube', wfdl: 'youtube { }' },
+    { name: 'map', wfdl: 'map { }' },
+    { name: 'lottieanimation', wfdl: 'lottieanimation { }' },
+    // ── Case variants (PascalCase vs lowercase) ──
+    { name: 'Section (pascal)', wfdl: 'Section { }' },
+    { name: 'Container (pascal)', wfdl: 'Container { }' },
+    { name: 'Div (pascal)', wfdl: 'Div { }' },
+    { name: 'DivBlock (pascal)', wfdl: 'DivBlock { }' },
+    { name: 'Grid (pascal)', wfdl: 'Grid { }' },
+    { name: 'HFlex (pascal)', wfdl: 'HFlex { }' },
+    { name: 'VFlex (pascal)', wfdl: 'VFlex { }' },
+    { name: 'Image (pascal)', wfdl: 'Image { }' },
+    { name: 'Link (pascal)', wfdl: 'Link { "Click" }' },
+    { name: 'Button (pascal)', wfdl: 'Button { "Click" }' },
+    { name: 'Paragraph (pascal)', wfdl: 'Paragraph { "Text" }' },
+    { name: 'List (pascal)', wfdl: 'List { }' },
+    { name: 'ListItem (pascal)', wfdl: 'ListItem { }' },
+    { name: 'FormBlock (pascal)', wfdl: 'FormBlock { }' },
+    { name: 'SliderWrapper (pascal)', wfdl: 'SliderWrapper { }' },
+    { name: 'TabWrapper (pascal)', wfdl: 'TabWrapper { }' },
+    // ── Syntax features ──
+    { name: 'text in section', wfdl: 'section { text "hello" }' },
+    { name: 'nested', wfdl: 'section { div { heading { "Title" } paragraph { "Body" } } }' },
+    { name: 'deep nest', wfdl: 'Section { Container { Div { Heading { "Title" } Paragraph { "Text" } } } }' },
+    // CSS class syntax?
+    { name: '.class-name', wfdl: 'div.test-class { }' },
+    { name: '.class spaced', wfdl: 'div .test-class { }' },
+    { name: '#id', wfdl: 'div#test-id { }' },
+    // Properties/attributes?
+    { name: 'prop colon', wfdl: 'div { color: red }' },
+    { name: 'prop key-value', wfdl: 'image { src: "test.jpg" }' },
+    { name: 'style block', wfdl: 'div { style { color: red } }' },
+    { name: 'text directive', wfdl: 'div { text "hello world" }' },
+    { name: 'multiple text', wfdl: 'div { "hello" "world" }' },
+    // Sibling elements
+    { name: 'siblings', wfdl: 'div { } div { }' },
+    { name: 'section+section', wfdl: 'section { } section { }' },
+  ];
+
+  // Export WFDL — deep probe of DesignerStore, all stores, and page tree
+  $('#btn-export-wfdl').addEventListener('click', async () => {
+    elementsOutput.innerHTML = '<span class="info">Deep-probing all stores for page element tree...</span>';
+    labStatus.textContent = 'Probing stores...';
+    try {
+      const code = `
+        (function() {
+          var result = {};
+
+          // 1. DesignerStore — use ImmutableJS accessors (not Object.keys)
+          try {
+            var state = window._webflow.state;
+            var ds = state.DesignerStore;
+            if (ds) {
+              var dsInfo = {};
+
+              // ImmutableJS: try .toJSON() to get real keys
+              if (typeof ds.toJSON === 'function') {
+                try {
+                  var dsJson = ds.toJSON();
+                  dsInfo.toJSON_keys = Object.keys(dsJson);
+                  // Sample each key's type and structure
+                  Object.keys(dsJson).forEach(function(k) {
+                    var v = dsJson[k];
+                    if (v === null || v === undefined) { dsInfo['key_' + k] = v; return; }
+                    var info = { type: typeof v };
+                    if (typeof v === 'object') {
+                      info.ctor = v.constructor ? v.constructor.name : '?';
+                      if (Array.isArray(v)) {
+                        info.length = v.length;
+                        if (v.length > 0) {
+                          var first = v[0];
+                          info.firstType = typeof first;
+                          if (typeof first === 'object' && first !== null) {
+                            info.firstKeys = Object.keys(first).slice(0, 10);
+                          }
+                        }
+                      } else {
+                        var objKeys = Object.keys(v);
+                        info.keyCount = objKeys.length;
+                        info.keys = objKeys.slice(0, 15);
+                      }
+                    } else if (typeof v === 'string') {
+                      info.value = v.slice(0, 100);
+                    } else {
+                      info.value = String(v);
+                    }
+                    dsInfo['key_' + k] = info;
+                  });
+                } catch(e) { dsInfo.toJsonError = e.message; }
+              }
+
+              // ImmutableJS: try .toJS() as fallback
+              if (typeof ds.toJS === 'function' && !dsInfo.toJSON_keys) {
+                try {
+                  var dsJs = ds.toJS();
+                  dsInfo.toJS_keys = Object.keys(dsJs);
+                } catch(e) { dsInfo.toJsError = e.message; }
+              }
+
+              // ImmutableJS: try .keySeq().toArray()
+              if (typeof ds.keySeq === 'function') {
+                try { dsInfo.keySeq = ds.keySeq().toArray(); } catch(e) { dsInfo.keySeqError = e.message; }
+              }
+
+              // Try direct property access for common tree properties
+              var treeProps = ['nodes', 'elements', 'tree', 'dom', 'body', 'page', 'pages',
+                'rootNode', 'rootElement', 'pageNodes', 'children', 'nodeMap', 'elementMap',
+                'selectedElement', 'selectedNode', 'currentPage', 'pageBody'];
+              treeProps.forEach(function(p) {
+                try {
+                  var v = typeof ds.get === 'function' ? ds.get(p) : ds[p];
+                  if (v !== undefined && v !== null) {
+                    var info = { type: typeof v };
+                    if (typeof v === 'object') {
+                      info.ctor = v.constructor ? v.constructor.name : '?';
+                      if (typeof v.toJSON === 'function') {
+                        try {
+                          var j = v.toJSON();
+                          info.keys = Object.keys(j).slice(0, 10);
+                          info.keyCount = Object.keys(j).length;
+                        } catch(e) {}
+                      } else if (typeof v.size !== 'undefined') {
+                        info.size = v.size;
+                      } else {
+                        try { info.keys = Object.keys(v).slice(0, 10); } catch(e) {}
+                      }
+                    }
+                    dsInfo['prop_' + p] = info;
+                  }
+                } catch(e) {}
+              });
+
+              result.designerStore = dsInfo;
+              result.currentPageId = ds.currentPageId;
+            }
+          } catch(e) {
+            result.designerStoreError = e.message;
+          }
+
+          // 2. Scan ALL stores in _webflow.state for element/node data
+          try {
+            var allStores = {};
+            var stateKeys = Object.keys(window._webflow.state);
+            result.allStoreNames = stateKeys;
+
+            stateKeys.forEach(function(storeName) {
+              var store = window._webflow.state[storeName];
+              if (!store || typeof store !== 'object') return;
+
+              var storeInfo = { ctor: store.constructor ? store.constructor.name : '?' };
+
+              // Get keys via ImmutableJS or plain object
+              var keys = [];
+              if (typeof store.toJSON === 'function') {
+                try {
+                  var sj = store.toJSON();
+                  keys = Object.keys(sj);
+                  storeInfo.keys = keys.slice(0, 20);
+                  storeInfo.totalKeys = keys.length;
+                } catch(e) { storeInfo.toJsonError = e.message; }
+              } else if (typeof store.keySeq === 'function') {
+                try {
+                  keys = store.keySeq().toArray();
+                  storeInfo.keys = keys.slice(0, 20);
+                  storeInfo.totalKeys = keys.length;
+                } catch(e) {}
+              } else {
+                try {
+                  keys = Object.keys(store);
+                  storeInfo.keys = keys.slice(0, 20);
+                  storeInfo.totalKeys = keys.length;
+                } catch(e) {}
+              }
+
+              // Flag stores that look like they contain element/node data
+              var interesting = keys.some(function(k) {
+                return /node|element|tree|dom|body|page|render|wfdl|child|parent|style|class/i.test(k);
+              });
+              if (interesting || /node|element|tree|dom|page|render/i.test(storeName)) {
+                storeInfo.flagged = true;
+              }
+
+              allStores[storeName] = storeInfo;
+            });
+            result.stores = allStores;
+          } catch(e) {
+            result.storesError = e.message;
+          }
+
+          // 3. Deep-dive into flagged stores — look for page tree data
+          try {
+            var state = window._webflow.state;
+            var deepDive = {};
+
+            // Check for common store names that might hold elements
+            var candidates = ['ElementsStore', 'NodesStore', 'PageStore', 'TreeStore',
+              'DOMStore', 'NodeStore', 'ElementStore', 'RenderStore', 'PageElementsStore',
+              'CanvasStore', 'DocumentStore', 'SiteStore', 'CurrentPageStore'];
+            candidates.forEach(function(name) {
+              if (state[name]) {
+                var s = state[name];
+                var info = {};
+                if (typeof s.toJSON === 'function') {
+                  try {
+                    var j = s.toJSON();
+                    info.keys = Object.keys(j).slice(0, 30);
+                    // Sample values that look like node/element data
+                    Object.keys(j).slice(0, 5).forEach(function(k) {
+                      var v = j[k];
+                      if (v && typeof v === 'object') {
+                        info['sample_' + k] = {
+                          ctor: v.constructor ? v.constructor.name : '?',
+                          keys: Object.keys(v).slice(0, 15),
+                          preview: JSON.stringify(v).slice(0, 500)
+                        };
+                      } else {
+                        info['sample_' + k] = v;
+                      }
+                    });
+                  } catch(e) { info.error = e.message; }
+                }
+                deepDive[name] = info;
+              }
+            });
+
+            // Also check any store with "node" or "element" in its name (case-insensitive)
+            Object.keys(state).forEach(function(name) {
+              if (!deepDive[name] && /node|element|tree|page|dom|canvas|render/i.test(name)) {
+                var s = state[name];
+                var info = {};
+                if (typeof s === 'object' && s !== null) {
+                  if (typeof s.toJSON === 'function') {
+                    try {
+                      var j = s.toJSON();
+                      info.keys = Object.keys(j).slice(0, 30);
+                      info.totalKeys = Object.keys(j).length;
+                      // Preview first 3
+                      Object.keys(j).slice(0, 3).forEach(function(k) {
+                        var v = j[k];
+                        info['sample_' + k] = v && typeof v === 'object' ?
+                          { keys: Object.keys(v).slice(0, 15), preview: JSON.stringify(v).slice(0, 300) } : v;
+                      });
+                    } catch(e) { info.error = e.message; }
+                  } else {
+                    try { info.keys = Object.keys(s).slice(0, 30); } catch(e) {}
+                  }
+                }
+                deepDive[name] = info;
+              }
+            });
+
+            if (Object.keys(deepDive).length > 0) result.deepDive = deepDive;
+          } catch(e) {
+            result.deepDiveError = e.message;
+          }
+
+          // 4. Inspect the __SitePlugin.page component definition
+          try {
+            var comps = window._webflow.state.DesignerStore.components;
+            if (comps && typeof comps.get === 'function') {
+              var pageComp = comps.get('__SitePlugin', 'page');
+              if (pageComp) {
+                var pcInfo = { type: typeof pageComp, ctor: pageComp.constructor ? pageComp.constructor.name : '?' };
+                // Get all methods and properties
+                var methods = [], props = [];
+                var proto = pageComp;
+                var visited = new Set();
+                while (proto && proto !== Object.prototype && !visited.has(proto)) {
+                  visited.add(proto);
+                  Object.getOwnPropertyNames(proto).forEach(function(k) {
+                    try {
+                      if (typeof proto[k] === 'function' && k !== 'constructor') methods.push(k);
+                      else if (k !== 'constructor' && typeof pageComp[k] !== 'function') {
+                        var val = pageComp[k];
+                        if (val && typeof val === 'object') {
+                          props.push(k + ': ' + (val.constructor ? val.constructor.name : typeof val) + ' (' + Object.keys(val).slice(0, 5).join(', ') + ')');
+                        } else {
+                          props.push(k + ': ' + JSON.stringify(val).slice(0, 60));
+                        }
+                      }
+                    } catch(e) {}
+                  });
+                  proto = Object.getPrototypeOf(proto);
+                }
+                pcInfo.methods = methods;
+                pcInfo.props = props;
+
+                // Try calling methods that might return tree
+                ['getRender', 'render', 'getBody', 'getTree', 'getNodes', 'getChildren', 'toWFDL', 'serialize', 'toJSON'].forEach(function(m) {
+                  if (typeof pageComp[m] === 'function') {
+                    try {
+                      var r = pageComp[m]();
+                      pcInfo['call_' + m] = typeof r === 'object' && r !== null ?
+                        { ctor: r.constructor ? r.constructor.name : '?', keys: Object.keys(r).slice(0, 15), preview: JSON.stringify(r).slice(0, 500) } :
+                        { type: typeof r, value: String(r).slice(0, 200) };
+                    } catch(e) { pcInfo['call_' + m] = 'error: ' + e.message; }
+                  }
+                });
+
+                result.sitePluginPage = pcInfo;
+              }
+            }
+          } catch(e) {
+            result.sitePluginPageError = e.message;
+          }
+
+          // 5. Try alternative paths to page tree
+          try {
+            var altPaths = {};
+
+            // wf.exportTrainingData() — check components more carefully
+            var td = wf.exportTrainingData();
+            altPaths.trainingDataKeys = Object.keys(td);
+            if (td.components) {
+              altPaths.components = {
+                type: typeof td.components,
+                ctor: td.components.constructor ? td.components.constructor.name : '?'
+              };
+              if (typeof td.components === 'string') {
+                altPaths.components.preview = td.components.slice(0, 1000);
+              } else if (Array.isArray(td.components)) {
+                altPaths.components.length = td.components.length;
+                if (td.components.length > 0) {
+                  altPaths.components.firstPreview = JSON.stringify(td.components[0]).slice(0, 500);
+                }
+              } else if (typeof td.components === 'object') {
+                altPaths.components.keys = Object.keys(td.components).slice(0, 20);
+                altPaths.components.preview = JSON.stringify(td.components).slice(0, 500);
+              }
+            }
+
+            // Check if wf has any other useful methods we missed
+            var wfMethods = [];
+            Object.keys(wf).forEach(function(k) {
+              if (typeof wf[k] === 'function') wfMethods.push(k + '(' + wf[k].length + ')');
+            });
+            altPaths.wfMethods = wfMethods;
+
+            result.altPaths = altPaths;
+          } catch(e) {
+            result.altPathsError = e.message;
+          }
+
+          return result;
+        })()
+      `;
+      const result = await evalInPage(code);
+      findings.wfdlExport = result;
+
+      const json = formatJson(result);
+      let html = `<div class="success">WFDL / DesignerStore probe complete</div>`;
+      html += `<div style="margin:8px 0">`;
+      html += `<button id="btn-download-wfdl-export">Download Full Probe JSON</button>`;
+      html += `</div>`;
+      html += `<pre style="max-height:500px;overflow:auto;font-size:10px">${escHtml(json)}</pre>`;
+      elementsOutput.innerHTML = html;
+
+      document.getElementById('btn-download-wfdl-export')?.addEventListener('click', () => {
+        const blob = new Blob([json], { type: 'application/json' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = 'wfdl-probe.json';
+        a.click();
+        URL.revokeObjectURL(url);
+        labStatus.textContent = 'Downloaded wfdl-probe.json';
+      });
+      labStatus.textContent = 'Probe done.';
+    } catch (err) {
+      elementsOutput.innerHTML = `<span class="error">Error: ${escHtml(err.message)}</span>`;
+      labStatus.textContent = 'Error.';
+    }
+  });
+
+  // Dump Node Tree — extract full AbstractNodeStore.root
+  $('#btn-dump-tree').addEventListener('click', async () => {
+    elementsOutput.innerHTML = '<span class="info">Extracting full page node tree from AbstractNodeStore...</span>';
+    labStatus.textContent = 'Extracting tree...';
+    try {
+      const code = `
+        (function() {
+          var store = window._webflow.state.AbstractNodeStore;
+          if (!store) return { error: 'AbstractNodeStore not found' };
+
+          var root;
+          if (typeof store.toJSON === 'function') {
+            root = store.toJSON().root;
+          } else if (store.root) {
+            root = store.root;
+          }
+          if (!root) return { error: 'No root node found' };
+
+          // Also grab StyleBlockStore for class name resolution
+          var styleMap = {};
+          try {
+            var sbs = window._webflow.state.StyleBlockStore;
+            var sbData;
+            if (typeof sbs.toJSON === 'function') sbData = sbs.toJSON();
+            else sbData = sbs;
+            if (sbData && sbData.styleBlocks) {
+              var blocks = sbData.styleBlocks;
+              // styleBlocks might be ImmutableJS
+              var plain = typeof blocks.toJSON === 'function' ? blocks.toJSON() : blocks;
+              Object.keys(plain).forEach(function(id) {
+                var sb = plain[id];
+                var plainSb = typeof sb.toJSON === 'function' ? sb.toJSON() : sb;
+                if (plainSb && plainSb.name) {
+                  styleMap[id] = plainSb.name;
+                }
+              });
+            }
+          } catch(e) {}
+
+          // Recursively serialize the tree with class names resolved
+          function serializeNode(node, depth) {
+            if (!node || depth > 20) return null;
+            var n = typeof node.toJSON === 'function' ? node.toJSON() : node;
+            var result = { id: n.id, tag: n.data ? n.data.tag : n.type };
+
+            // Resolve class names from styleBlockIds
+            if (n.data && n.data.styleBlockIds && n.data.styleBlockIds.length > 0) {
+              result.classes = n.data.styleBlockIds.map(function(sid) {
+                return styleMap[sid] || sid;
+              });
+            }
+
+            // Text content
+            if (n.data && n.data.text === true && n.children && n.children.length > 0) {
+              // Text nodes: children contain text runs
+              var textContent = [];
+              n.children.forEach(function(child) {
+                var c = typeof child === 'object' ? (typeof child.toJSON === 'function' ? child.toJSON() : child) : child;
+                if (c && c.text) textContent.push(typeof c.text === 'string' ? c.text : JSON.stringify(c.text));
+                else if (typeof c === 'string') textContent.push(c);
+                else if (c && c.v) textContent.push(c.v);
+              });
+              if (textContent.length > 0) result.text = textContent.join('');
+            }
+
+            // Key data properties
+            if (n.data) {
+              if (n.data.attributes && n.data.attributes.length > 0) {
+                result.attrs = {};
+                n.data.attributes.forEach(function(attr) {
+                  if (typeof attr === 'object' && attr.key) result.attrs[attr.key] = attr.value;
+                  else if (Array.isArray(attr) && attr.length >= 2) result.attrs[attr[0]] = attr[1];
+                });
+              }
+              if (n.data.slot) result.slot = n.data.slot;
+              if (n.data.xattr && n.data.xattr.length > 0) result.xattr = n.data.xattr;
+            }
+            if (n.type) result.type = n.type;
+
+            // Recurse children (skip text runs already handled)
+            if (n.children && n.children.length > 0 && !(n.data && n.data.text === true)) {
+              result.children = [];
+              n.children.forEach(function(child) {
+                var c = serializeNode(child, depth + 1);
+                if (c) result.children.push(c);
+              });
+            }
+
+            return result;
+          }
+
+          var tree = serializeNode(root, 0);
+
+          // Count total nodes
+          function countNodes(n) {
+            if (!n) return 0;
+            var c = 1;
+            if (n.children) n.children.forEach(function(ch) { c += countNodes(ch); });
+            return c;
+          }
+
+          return {
+            nodeCount: countNodes(tree),
+            styleBlockCount: Object.keys(styleMap).length,
+            tree: tree
+          };
+        })()
+      `;
+      const result = await evalInPage(code);
+      findings.nodeTree = result;
+
+      if (result.error) {
+        elementsOutput.innerHTML = `<span class="error">${escHtml(result.error)}</span>`;
+        labStatus.textContent = 'Error.';
+        return;
+      }
+
+      const json = formatJson(result);
+      let html = `<div class="success">Extracted ${result.nodeCount} nodes (${result.styleBlockCount} style blocks resolved)</div>`;
+      html += `<div style="margin:8px 0">`;
+      html += `<button id="btn-download-tree">Download node-tree.json</button>`;
+      html += `</div>`;
+      html += `<pre style="max-height:500px;overflow:auto;font-size:10px">${escHtml(json)}</pre>`;
+      elementsOutput.innerHTML = html;
+
+      document.getElementById('btn-download-tree')?.addEventListener('click', () => {
+        const blob = new Blob([json], { type: 'application/json' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = 'node-tree.json';
+        a.click();
+        URL.revokeObjectURL(url);
+        labStatus.textContent = 'Downloaded node-tree.json';
+      });
+      labStatus.textContent = `${result.nodeCount} nodes extracted.`;
+    } catch (err) {
+      elementsOutput.innerHTML = `<span class="error">Error: ${escHtml(err.message)}</span>`;
+      labStatus.textContent = 'Error.';
+    }
+  });
+
+  // Test addToCanvas — probe Element construction + canvas insertion
+  $('#btn-test-add').addEventListener('click', async () => {
+    elementsOutput.innerHTML = `<span class="info">Probing Element construction paths...</span>`;
+    labStatus.textContent = 'Probing...';
+    try {
+      const code = `
+        (function() {
+          var results = {};
+
+          // 1. Ensure __plinthRequire is available (re-capture if needed)
+          try {
+            if (!window.__plinthRequire) {
+              var captured = null;
+              var mainChunk = window.webpackChunk;
+              if (!mainChunk) { results.error = 'No webpackChunk found'; return results; }
+              var fakeModuleId = '__plinth_probe_' + Date.now();
+              mainChunk.push([[fakeModuleId], {
+                [fakeModuleId]: function(module, exports, __webpack_require__) {
+                  captured = __webpack_require__;
+                }
+              }, function(runtime) { if (runtime) runtime(fakeModuleId); }]);
+              if (!captured) { results.error = 'Failed to capture __webpack_require__'; return results; }
+              window.__plinthRequire = captured;
+            }
+            results.capturedRequire = true;
+          } catch(e) {
+            results.captureError = e.message;
+            return results;
+          }
+
+          // 2. Load modules
+          try {
+          var r = window.__plinthRequire;
+          var parser     = r(110970);  // WFDL parser
+          var expressions = r(629107); // Expressions, Component, Plugins
+          var compMap    = r(123699);  // ComponentMap
+          var testSuite  = r(768948);  // forTestSuite, toSource
+          var treeOps    = r(591280);  // HgV, tgb, Ycc, h6G
+          var exprCtors  = r(953932);  // EElement, EList, EText, ERecord, EBoolean
+          var Expr = expressions.Expressions;
+          var wfPlugins = window._webflow?.state?.DesignerStore?.plugins;
+
+          results.modulesLoaded = {
+            parser: !!parser, expressions: !!Expr, compMap: !!compMap?.m,
+            testSuite: !!testSuite, treeOps: !!treeOps, exprCtors: !!exprCtors
+          };
+
+          // ── Strategy 1: Build element and dispatch ELEMENT_ADDED ──
+          // From probe #14 we know:
+          //   - Real element is RAW {id: STRING, type: ARRAY, data: ...}, NOT expression-wrapped
+          //   - position: "append", anchorId: bodyId
+          //   - elementPreset: QN array like ["Basic","DivBlock"]
+          //   - idMap values are strings, not arrays
+          //   - initialStyleBlockId: a UUID string
+          //   - designerState/styleBlockState/uiNodeState: refs to current state
+          // From probe #15: expression-wrapped element CRASHED the page
+          try {
+            var Component = expressions.Component;
+            var EP = expressions.ElementPreset;
+            var tgb = treeOps.tgb;
+
+            // Get body element ID
+            var dsState = window._webflow?.state?.DesignerStore;
+            var dsComponents = dsState?.components;
+            var pageComp = dsComponents.get(tgb);
+            var pageRender = Component.getRender(pageComp);
+            var pageEl = Expr.getElement(pageRender);
+            var bodyId = pageEl?.id;
+            results.bodyId = bodyId;
+
+            var childrenList = pageEl?.data?.val?.children?.val;
+            results.beforeChildCount = childrenList?.length || childrenList?.size || 0;
+
+            // ── Approach A: Use EElement constructor directly with string IDs ──
+            try {
+              var EC = exprCtors;
+              var uuid = crypto.randomUUID();
+              var styleId = crypto.randomUUID();
+
+              // Build element using expression constructors (string ID, not array)
+              var divElement = EC.EElement({
+                id: uuid,
+                type: ['Basic', 'Block'],
+                data: EC.ERecord({
+                  tag: EC.EEnum('div'),
+                  text: EC.EBoolean(false),
+                  children: EC.EList([])
+                })
+              });
+
+              // divElement is expression-wrapped: {type: "Element", val: {id, type, data}}
+              // Unwrap to get raw element
+              var rawElement = Expr.getElement(divElement);
+
+              results.approachA = {
+                exprType: divElement?.type,
+                rawType: rawElement?.type,
+                rawId: rawElement?.id,
+                rawIdType: typeof rawElement?.id,
+                rawDataType: typeof rawElement?.data,
+                rawConstructor: rawElement?.constructor?.name
+              };
+
+              // Dispatch
+              window._webflow.dispatch({
+                type: 'ELEMENT_ADDED',
+                payload: {
+                  anchorId: bodyId,
+                  nativeId: uuid,
+                  position: 'append',
+                  anchorPath: null,
+                  elementPreset: ['Basic', 'DivBlock'],
+                  initialStyleBlockId: styleId,
+                  styleBlockState: window._webflow?.state?.StyleBlockStore,
+                  designerState: window._webflow?.state?.DesignerStore,
+                  uiNodeState: window._webflow?.state?.UiNodeStore,
+                  element: rawElement,
+                  idMap: { 'Div Block': uuid },
+                  assetsToImport: [],
+                  componentMapPatch: null
+                }
+              });
+              results.approachA.dispatched = true;
+
+              // Check result
+              var pc2 = window._webflow?.state?.DesignerStore?.components?.get(tgb);
+              var pr2 = pc2 ? Component.getRender(pc2) : null;
+              var pe2 = pr2 ? Expr.getElement(pr2) : null;
+              var ch2 = pe2?.data?.val?.children?.val;
+              results.approachA.afterCount = ch2?.length || ch2?.size || 0;
+              results.approachA.worked = results.approachA.afterCount > results.beforeChildCount;
+
+            } catch(e) {
+              results.approachAError = e.message?.slice(0, 500);
+              results.approachAStack = e.stack?.slice(0, 500);
+            }
+
+            // ── Approach B: Use instantiateFactory but unwrap + fix IDs ──
+            if (!results.approachA?.worked) {
+              try {
+                var capturedPresets = {};
+                wfPlugins.elementPresets.forEach(function(preset, qn) {
+                  var parts = String(qn).split(',');
+                  capturedPresets[parts[0] + '::' + parts[1]] = preset;
+                });
+                var divPreset = capturedPresets['Basic::DivBlock'];
+                var uuid2 = crypto.randomUUID();
+                var styleId2 = crypto.randomUUID();
+                var inst = EP.instantiateFactory(divPreset, [uuid2]);
+
+                // Unwrap expression
+                var rawEl = inst.element?.val;
+
+                // Fix ID from array to string
+                var fixedEl;
+                if (rawEl) {
+                  // Check if rawEl is frozen/immutable
+                  results.approachB = {
+                    rawElFrozen: Object.isFrozen(rawEl),
+                    rawElIdType: typeof rawEl.id,
+                    rawElIdIsArray: Array.isArray(rawEl.id),
+                    rawElConstructor: rawEl.constructor?.name
+                  };
+
+                  if (Array.isArray(rawEl.id)) {
+                    // Create new object with string id, preserving data reference
+                    fixedEl = { id: rawEl.id[0] || uuid2, type: rawEl.type, data: rawEl.data };
+                  } else {
+                    fixedEl = rawEl;
+                  }
+
+                  results.approachB.fixedId = fixedEl.id;
+                  results.approachB.fixedIdType = typeof fixedEl.id;
+                }
+
+                // Fix idMap
+                var fixedIdMap = {};
+                Object.keys(inst.idMap).forEach(function(k) {
+                  var v = inst.idMap[k];
+                  fixedIdMap[k] = Array.isArray(v) ? v[0] : v;
+                });
+
+                window._webflow.dispatch({
+                  type: 'ELEMENT_ADDED',
+                  payload: {
+                    anchorId: bodyId,
+                    nativeId: fixedEl.id,
+                    position: 'append',
+                    anchorPath: null,
+                    elementPreset: ['Basic', 'DivBlock'],
+                    initialStyleBlockId: styleId2,
+                    styleBlockState: window._webflow?.state?.StyleBlockStore,
+                    designerState: window._webflow?.state?.DesignerStore,
+                    uiNodeState: window._webflow?.state?.UiNodeStore,
+                    element: fixedEl,
+                    idMap: fixedIdMap,
+                    assetsToImport: [],
+                    componentMapPatch: null
+                  }
+                });
+                results.approachB.dispatched = true;
+
+                var pc3 = window._webflow?.state?.DesignerStore?.components?.get(tgb);
+                var pr3 = pc3 ? Component.getRender(pc3) : null;
+                var pe3 = pr3 ? Expr.getElement(pr3) : null;
+                var ch3 = pe3?.data?.val?.children?.val;
+                results.approachB.afterCount = ch3?.length || ch3?.size || 0;
+                results.approachB.worked = results.approachB.afterCount > results.beforeChildCount;
+
+              } catch(e) {
+                results.approachBError = e.message?.slice(0, 500);
+                results.approachBStack = e.stack?.slice(0, 500);
+              }
+            }
+
+            // ── Approach C: Use expression-wrapped element (last resort) ──
+            // Probe #15 crashed with this, but maybe it was a different issue.
+            // Try with ALL other fields correct, just expression-wrapped element.
+            if (!results.approachA?.worked && !results.approachB?.worked) {
+              try {
+                var EC3 = exprCtors;
+                var uuid3 = crypto.randomUUID();
+                var styleId3 = crypto.randomUUID();
+
+                var wrappedElement = EC3.EElement({
+                  id: uuid3,
+                  type: ['Basic', 'Block'],
+                  data: EC3.ERecord({
+                    tag: EC3.EEnum('div'),
+                    text: EC3.EBoolean(false),
+                    children: EC3.EList([])
+                  })
+                });
+
+                window._webflow.dispatch({
+                  type: 'ELEMENT_ADDED',
+                  payload: {
+                    anchorId: bodyId,
+                    nativeId: uuid3,
+                    position: 'append',
+                    anchorPath: null,
+                    elementPreset: ['Basic', 'DivBlock'],
+                    initialStyleBlockId: styleId3,
+                    styleBlockState: window._webflow?.state?.StyleBlockStore,
+                    designerState: window._webflow?.state?.DesignerStore,
+                    uiNodeState: window._webflow?.state?.UiNodeStore,
+                    element: wrappedElement,
+                    idMap: { 'Div Block': uuid3 },
+                    assetsToImport: [],
+                    componentMapPatch: null
+                  }
+                });
+                results.approachC = { dispatched: true };
+
+                var pc4 = window._webflow?.state?.DesignerStore?.components?.get(tgb);
+                var pr4 = pc4 ? Component.getRender(pc4) : null;
+                var pe4 = pr4 ? Expr.getElement(pr4) : null;
+                var ch4 = pe4?.data?.val?.children?.val;
+                results.approachC.afterCount = ch4?.length || ch4?.size || 0;
+                results.approachC.worked = results.approachC.afterCount > results.beforeChildCount;
+
+              } catch(e) {
+                results.approachCError = e.message?.slice(0, 500);
+                results.approachCStack = e.stack?.slice(0, 500);
+              }
+            }
+
+          } catch(e) {
+            results.strategy1Error = e.message?.slice(0, 500);
+            results.strategy1Stack = e.stack?.slice(0, 500);
+          }
+
+          } catch(e) {
+            results.fatalError = e.message;
+          }
+
+          return results;
+        })()
+      `;
+
+      const result = await evalInPage(code);
+      findings.webpackInject = result;
+
+      const json = formatJson(result);
+      let html = `<div class="info">Webpack module injection results</div>`;
+
+      if (result.capturedRequire) {
+        html += `<div class="success"><strong>__webpack_require__ captured!</strong></div>`;
+      } else {
+        html += `<div class="error">Failed to capture __webpack_require__: ${escHtml(result.error || result.captureError || 'unknown')}</div>`;
+      }
+
+      if (result.modulesLoaded) {
+        const loaded = Object.entries(result.modulesLoaded)
+          .filter(([k]) => !k.endsWith('Keys'))
+          .map(([k, v]) => `${k}: ${v ? 'YES' : 'no'}`)
+          .join(' | ');
+        html += `<div class="kv-row"><strong>Modules:</strong> ${loaded}</div>`;
+      }
+
+      // Strategy 1: ElementPreset instantiation
+      if (result.instantiatedElement?.isElement) {
+        html += `<div class="success"><strong>S1: DivBlock instantiated as Element!</strong></div>`;
+        html += `<div class="kv-row" style="font-size:10px">${escHtml(result.instantiatedElement.toSource || '')}</div>`;
+      }
+      if (result.sectionInstantiated?.isElement) {
+        html += `<div class="success"><strong>S1: Section instantiated as Element!</strong></div>`;
+      }
+      if (result.presetsByNamespace) {
+        const total = Object.values(result.presetsByNamespace).reduce((s, a) => s + a.length, 0);
+        html += `<div class="kv-row"><strong>Presets:</strong> ${total} across ${Object.keys(result.presetsByNamespace).length} namespaces</div>`;
+      }
+
+      // Strategy 2: Body inspection + tree ops
+      if (result.bodyExprType) {
+        html += `<div class="kv-row"><strong>S2: Page body type:</strong> ${escHtml(JSON.stringify(result.bodyExprType))}</div>`;
+      }
+      if (result.bodyChildren) {
+        html += `<div class="kv-row"><strong>S2: Body children:</strong> type=${result.bodyChildren.type}, count=${result.bodyChildren.length}</div>`;
+      }
+      if (result.treeOpsByArity) {
+        const a4 = result.treeOpsByArity['4'] || [];
+        if (a4.length > 0) html += `<div class="kv-row"><strong>4-arg ops:</strong> ${a4.map(f => f.name || f.key).join(', ')}</div>`;
+      }
+
+      // Strategy 3: Page body + tree ops
+      if (result.pageBody?.isElement) {
+        html += `<div class="success"><strong>S3: Page body is Element</strong> (id: ${result.pageBodyId})</div>`;
+        if (result.pageBodyChildren) {
+          html += `<div class="kv-row">Body children: ${result.pageBodyChildren.type}, count: ${result.pageBodyChildren.listLength}</div>`;
+        }
+      }
+
+      // Strategy 4: Module 50114 / addToCanvas
+      if (result.hasAddToCanvas) {
+        html += `<div class="success"><strong>S4: addToCanvas function found!</strong></div>`;
+      }
+      if (result.mod50114Functions) {
+        const fnames = Object.values(result.mod50114Functions).map(f => f.name || '(anon)').filter(n => n !== '(anon)');
+        if (fnames.length > 0) html += `<div class="kv-row"><strong>Module 50114:</strong> ${fnames.join(', ')}</div>`;
+      }
+
+      // Errors
+      ['strategy1Error', 'strategy2Error', 'strategy3Error', 'strategy4Error', 'fatalError'].forEach(k => {
+        if (result[k]) html += `<div class="error"><strong>${k}:</strong> ${escHtml(result[k])}</div>`;
+      });
+
+      html += `<div style="margin:8px 0"><button id="btn-download-add-result">Download webpack-inject.json</button></div>`;
+      html += `<pre style="max-height:500px;overflow:auto;font-size:10px">${escHtml(json)}</pre>`;
+      elementsOutput.innerHTML = html;
+
+      document.getElementById('btn-download-add-result')?.addEventListener('click', () => {
+        const blob = new Blob([json], { type: 'application/json' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = 'webpack-inject.json';
+        a.click();
+        URL.revokeObjectURL(url);
+      });
+
+      labStatus.textContent = 'Done. Check results.';
+    } catch (err) {
+      elementsOutput.innerHTML = `<span class="error">Error: ${escHtml(err.message)}</span>`;
+      labStatus.textContent = 'Error.';
+    }
+  });
+
+  // Validate WFDL — test a string without adding to canvas
+  $('#btn-validate-wfdl').addEventListener('click', async () => {
+    // Use the snapshot paste textarea for input
+    const wfdlStr = $('#snapshot-paste').value.trim();
+    if (!wfdlStr) {
+      snapshotOutput.innerHTML = '<span class="info">Paste a WFDL string into the textarea above, then click Validate WFDL.</span>';
+      return;
+    }
+    snapshotOutput.innerHTML = '<span class="info">Validating WFDL...</span>';
+    try {
+      // Escape the string for embedding in eval
+      const escaped = JSON.stringify(wfdlStr);
+      const code = `
+        (function() {
+          var wf = window.wf;
+          if (!wf || typeof wf.validateWFDL !== 'function') return { error: 'wf.validateWFDL not available' };
+          try {
+            var result = wf.validateWFDL(${escaped});
+            return JSON.parse(JSON.stringify(result));
+          } catch(e) {
+            return { error: e.message };
+          }
+        })()
+      `;
+      const result = await evalInPage(code);
+      findings.lastWfdlValidation = { input: wfdlStr, result };
+
+      if (result.isValid) {
+        snapshotOutput.innerHTML = `<div class="success">WFDL is valid!</div><pre style="font-size:10px">${escHtml(formatJson(result))}</pre>`;
+      } else {
+        snapshotOutput.innerHTML = `<div class="error">WFDL invalid:</div><pre style="font-size:10px">${escHtml(formatJson(result))}</pre>`;
+      }
+    } catch (err) {
+      snapshotOutput.innerHTML = `<span class="error">Error: ${escHtml(err.message)}</span>`;
+    }
+  });
+
+  // WFDL Element Lab — validate every element type to discover valid syntax
+  $('#btn-wfdl-lab').addEventListener('click', async () => {
+    const btn = $('#btn-wfdl-lab');
+    btn.disabled = true;
+    elementsOutput.innerHTML = '<span class="info">Running WFDL Element Lab...</span>';
+
+    const results = {};
+    const total = WFDL_ELEMENTS.length;
+
+    for (let i = 0; i < total; i++) {
+      const el = WFDL_ELEMENTS[i];
+      labStatus.textContent = `Validating ${i + 1}/${total}: ${el.name}...`;
+
+      try {
+        const escaped = JSON.stringify(el.wfdl);
+        const code = `
+          (function() {
+            var wf = window.wf;
+            if (!wf || typeof wf.validateWFDL !== 'function') return { error: 'no validateWFDL' };
+            try {
+              return JSON.parse(JSON.stringify(wf.validateWFDL(${escaped})));
+            } catch(e) {
+              return { error: e.message };
+            }
+          })()
+        `;
+        const result = await evalInPage(code);
+        results[el.name] = { wfdl: el.wfdl, ...result };
+      } catch (err) {
+        results[el.name] = { wfdl: el.wfdl, error: err.message };
+      }
+    }
+
+    findings.wfdlLab = results;
+
+    // Render
+    const valid = Object.entries(results).filter(([, v]) => v.isValid);
+    const invalid = Object.entries(results).filter(([, v]) => !v.isValid);
+
+    let html = `<div class="success">WFDL Element Lab: ${valid.length} valid, ${invalid.length} invalid</div>`;
+
+    if (valid.length > 0) {
+      html += '<div style="margin-top:8px"><span class="kv-key" style="font-weight:bold">Valid WFDL:</span></div>';
+      for (const [name, r] of valid) {
+        html += `<div class="kv-row" style="margin-top:4px">`;
+        html += `<span class="success">\u2713</span> <span class="kv-key">${escHtml(name)}</span>`;
+        html += ` <span class="info">${escHtml(r.wfdl)}</span>`;
+        html += `</div>`;
+        if (r.validationSteps) {
+          html += `<div class="kv-row" style="padding-left:20px"><span class="kv-keys">${escHtml(formatJson(r.validationSteps))}</span></div>`;
+        }
+      }
+    }
+
+    if (invalid.length > 0) {
+      html += '<div style="margin-top:12px"><span class="kv-key" style="font-weight:bold">Invalid WFDL:</span></div>';
+      for (const [name, r] of invalid) {
+        html += `<div class="kv-row" style="margin-top:4px">`;
+        html += `<span class="error">\u2717</span> <span class="kv-key">${escHtml(name)}</span>`;
+        html += ` <span class="info">${escHtml(r.wfdl)}</span>`;
+        html += `</div>`;
+        const errMsg = r.error?.message || r.error || '';
+        if (errMsg) {
+          html += `<div class="kv-row" style="padding-left:20px"><span class="error">${escHtml(typeof errMsg === 'string' ? errMsg : formatJson(errMsg))}</span></div>`;
+        }
+      }
+    }
+
+    elementsOutput.innerHTML = html;
+    labStatus.textContent = `Done — ${valid.length} valid, ${invalid.length} invalid.`;
+    btn.disabled = false;
+  });
+
   // ── Tab 4: Presets ──────────────────────────────────────────────────
 
   const presetsOutput = $('#presets-output');
@@ -555,6 +2184,406 @@
     } catch (err) {
       presetsOutput.innerHTML = `<span class="error">Error: ${escHtml(err.message)}</span>`;
     }
+  });
+
+  // ── Export / Full Scan ────────────────────────────────────────────
+
+  const exportStatus = $('#export-status');
+  let findings = { globals: null, react: null, elements: null, presets: null, methods: null };
+
+  function setExportStatus(msg) {
+    exportStatus.textContent = msg;
+  }
+
+  // ── Reusable probe functions (return data, not HTML) ─────────────
+
+  async function probeGlobals() {
+    const code = `
+      (function() {
+        var keys = ${JSON.stringify(WEBFLOW_KEYS)};
+        var results = [];
+        keys.forEach(function(k) {
+          try {
+            var v = window[k];
+            if (v !== undefined) {
+              var type = typeof v;
+              var ctor = v && v.constructor ? v.constructor.name : type;
+              var topKeys = [];
+              if (type === 'object' && v !== null) {
+                try { topKeys = Object.keys(v).slice(0, 30); } catch(e) {}
+              }
+              results.push({ key: k, type: type, ctor: ctor, topKeys: topKeys });
+            }
+          } catch(e) {
+            results.push({ key: k, error: e.message });
+          }
+        });
+        try {
+          Object.getOwnPropertyNames(window).forEach(function(k) {
+            if (/webflow|^wf|^_wf|^__wf/i.test(k) && !keys.includes(k)) {
+              try {
+                var v = window[k];
+                results.push({ key: k, type: typeof v, ctor: v && v.constructor ? v.constructor.name : typeof v, topKeys: [], discovered: true });
+              } catch(e) {}
+            }
+          });
+        } catch(e) {}
+        return results;
+      })()
+    `;
+    return evalInPage(code);
+  }
+
+  async function probeReact() {
+    const code = `
+      (function() {
+        var results = [];
+        var els = document.querySelectorAll('body, body > *, #root, #__next, [id*="app"], [id*="root"]');
+        var seen = new Set();
+        els.forEach(function(el) {
+          if (seen.has(el)) return; seen.add(el);
+          Object.keys(el).forEach(function(k) {
+            if (k.startsWith('__reactFiber$') || k.startsWith('__reactInternalInstance$') || k.startsWith('__reactContainer$')) {
+              var fiber = el[k], name = '(unknown)';
+              try { if (fiber && fiber.type && fiber.type.name) name = fiber.type.name; } catch(e) {}
+              results.push({ tag: el.tagName.toLowerCase(), id: el.id || null, fiberKey: k, component: name });
+            }
+          });
+        });
+        var iframes = document.querySelectorAll('iframe');
+        iframes.forEach(function(iframe, idx) {
+          try {
+            var doc = iframe.contentDocument; if (!doc) return;
+            var root = doc.querySelector('#root, body'); if (!root) return;
+            Object.keys(root).forEach(function(k) {
+              if (k.startsWith('__reactFiber$') || k.startsWith('__reactContainer$')) {
+                results.push({ tag: 'iframe#' + idx + '>' + root.tagName.toLowerCase(), id: root.id, fiberKey: k, iframe: true });
+              }
+            });
+          } catch(e) {
+            results.push({ tag: 'iframe#' + idx, error: 'cross-origin', iframe: true });
+          }
+        });
+        return results;
+      })()
+    `;
+    return evalInPage(code);
+  }
+
+  async function probeElements() {
+    const code = `
+      (function() {
+        function walk(el, d) {
+          if (d > 8) return null;
+          var r = { tag: el.tagName ? el.tagName.toLowerCase() : '?', id: el.id || null, cls: el.className && typeof el.className === 'string' ? el.className : null, wfId: el.getAttribute ? el.getAttribute('data-w-id') : null, wfType: el.getAttribute ? el.getAttribute('data-wf-type') : null, kids: [] };
+          if (el.children) { for (var i = 0; i < el.children.length && i < 50; i++) { var c = walk(el.children[i], d+1); if (c) r.kids.push(c); } }
+          return r;
+        }
+        var iframes = document.querySelectorAll('iframe');
+        for (var i = 0; i < iframes.length; i++) {
+          try { var doc = iframes[i].contentDocument; if (!doc) continue; var body = doc.querySelector('body'); if (body && body.children.length > 0) return { source: 'iframe#' + i, tree: walk(body, 0) }; } catch(e) {}
+        }
+        return { source: 'main', tree: walk(document.body, 0) };
+      })()
+    `;
+    return evalInPage(code);
+  }
+
+  // ── Format findings as markdown ──────────────────────────────────
+
+  function findingsToMarkdown() {
+    const lines = ['# Plinth Inspector — Findings', '', `Scanned: ${new Date().toISOString()}`, ''];
+
+    lines.push('---', '', '## Window Globals', '');
+    if (findings.globals && findings.globals.length > 0) {
+      for (const g of findings.globals) {
+        if (g.error) {
+          lines.push(`- \`window.${g.key}\` — ERROR: ${g.error}`);
+        } else {
+          let line = `- \`window.${g.key}\` — ${g.ctor}`;
+          if (g.topKeys && g.topKeys.length > 0) {
+            line += ` { ${g.topKeys.join(', ')}${g.topKeys.length >= 30 ? ', ...' : ''} }`;
+          }
+          if (g.discovered) line += ' (discovered)';
+          lines.push(line);
+        }
+      }
+    } else {
+      lines.push('No Webflow-related globals found.');
+    }
+
+    lines.push('', '## React Roots', '');
+    if (findings.react && findings.react.length > 0) {
+      for (const r of findings.react) {
+        let line = `- \`${r.tag}`;
+        if (r.id) line += `#${r.id}`;
+        line += `\` — ${r.fiberKey}`;
+        if (r.component) line += ` → ${r.component}`;
+        if (r.error) line += ` (${r.error})`;
+        if (r.iframe) line += ' (iframe)';
+        lines.push(line);
+      }
+    } else {
+      lines.push('No React fiber roots found.');
+    }
+
+    lines.push('', '## Canvas DOM', '');
+    if (findings.elements) {
+      lines.push(`Source: ${findings.elements.source}`, '', '```');
+      function walkTree(node, indent) {
+        let line = '  '.repeat(indent) + `<${node.tag}>`;
+        if (node.id) line += ` #${node.id}`;
+        if (node.cls) line += ` .${node.cls.split(' ').join(' .')}`;
+        if (node.wfId) line += ` [data-w-id="${node.wfId}"]`;
+        if (node.wfType) line += ` [data-wf-type="${node.wfType}"]`;
+        lines.push(line);
+        if (node.kids) { for (const k of node.kids) { walkTree(k, indent + 1); } }
+      }
+      if (findings.elements.tree) walkTree(findings.elements.tree, 0);
+      lines.push('```');
+    } else {
+      lines.push('No elements dumped.');
+    }
+
+    lines.push('', '## JSON-RPC Methods', '');
+    if (findings.methods && findings.methods.length > 0) {
+      // Deduplicate by method name, count occurrences
+      const methodMap = {};
+      for (const m of findings.methods) {
+        if (!methodMap[m.method]) {
+          methodMap[m.method] = { count: 0, dirs: new Set(), sample: m.data };
+        }
+        methodMap[m.method].count++;
+        methodMap[m.method].dirs.add(m.dir === 'in' ? 'Designer→Ext' : 'Ext→Designer');
+      }
+      for (const [name, info] of Object.entries(methodMap).sort((a, b) => a[0].localeCompare(b[0]))) {
+        lines.push(`### ${name}`);
+        lines.push(`- Direction: ${[...info.dirs].join(', ')}`);
+        lines.push(`- Seen: ${info.count}x`);
+        lines.push(`- Sample payload:`);
+        lines.push('```json', formatJson(info.sample), '```');
+        lines.push('');
+      }
+    } else {
+      lines.push('No messages captured yet. Open the Designer Extension panel and re-scan.');
+    }
+
+    lines.push('', '## Preset Children', '');
+    if (findings.presets && Object.keys(findings.presets).length > 0) {
+      for (const [name, children] of Object.entries(findings.presets).sort((a, b) => a[0].localeCompare(b[0]))) {
+        if (children === 'error') {
+          lines.push(`- **${name}** — failed to create`);
+        } else if (children.length === 0) {
+          lines.push(`- **${name}** — (no auto-children)`);
+        } else {
+          lines.push(`- **${name}** → ${children.join(', ')}`);
+        }
+      }
+    } else {
+      lines.push('Not yet probed. Use "Probe All Presets" to discover child structures.');
+    }
+
+    lines.push('', '## Internal Element Types', '');
+    // Extract unique wfType values from elements tree
+    if (findings.elements && findings.elements.tree) {
+      const types = new Set();
+      function extractTypes(node) {
+        if (node.wfType) types.add(node.wfType);
+        if (node.kids) node.kids.forEach(extractTypes);
+      }
+      extractTypes(findings.elements.tree);
+      if (types.size > 0) {
+        for (const t of [...types].sort()) {
+          lines.push(`- \`${t}\``);
+        }
+      } else {
+        lines.push('No data-wf-type attributes found in DOM.');
+      }
+    } else {
+      lines.push('Run Full Scan first.');
+    }
+
+    lines.push('', '## Deep Probe', '');
+    if (findings.deepProbe) {
+      lines.push('```json', formatJson(findings.deepProbe), '```');
+    } else {
+      lines.push('Not yet run. Click "Deep Probe" in the Globals tab first.');
+    }
+
+    lines.push('', '## WFDL Element Lab', '');
+    if (findings.wfdlLab) {
+      const valid = Object.entries(findings.wfdlLab).filter(([, v]) => v.isValid);
+      const invalid = Object.entries(findings.wfdlLab).filter(([, v]) => !v.isValid);
+      lines.push(`Tested ${Object.keys(findings.wfdlLab).length} WFDL snippets: ${valid.length} valid, ${invalid.length} invalid.`);
+      lines.push('');
+      if (valid.length > 0) {
+        lines.push('### Valid WFDL');
+        for (const [name, r] of valid) {
+          lines.push(`- **${name}**: \`${r.wfdl}\``);
+        }
+      }
+      if (invalid.length > 0) {
+        lines.push('', '### Invalid WFDL');
+        for (const [name, r] of invalid) {
+          const errMsg = r.error?.message || r.error || 'unknown error';
+          lines.push(`- **${name}**: \`${r.wfdl}\` — ${typeof errMsg === 'string' ? errMsg : formatJson(errMsg)}`);
+        }
+      }
+    } else {
+      lines.push('Not yet run. Click "WFDL Element Lab" in the Elements tab first.');
+    }
+
+    lines.push('', '## WFDL Export', '');
+    if (findings.wfdlExport && findings.wfdlExport.data) {
+      lines.push('Full export available via Download button. Summary:');
+      const data = findings.wfdlExport.data;
+      if (typeof data === 'object') {
+        lines.push('```json', formatJson(Object.keys(data)), '```');
+      }
+    } else if (findings.wfdlExport && findings.wfdlExport.summary) {
+      lines.push('```json', formatJson(findings.wfdlExport.summary), '```');
+    } else {
+      lines.push('Not yet run. Click "Export WFDL" in the Elements tab first.');
+    }
+
+    lines.push('', '## Gotchas', '', '<!-- Add observations here -->');
+
+    return lines.join('\n');
+  }
+
+  // ── Full Scan ────────────────────────────────────────────────────
+
+  $('#btn-full-scan').addEventListener('click', async () => {
+    const btn = $('#btn-full-scan');
+    btn.disabled = true;
+    setExportStatus('Scanning globals...');
+    try {
+      findings.globals = await probeGlobals();
+      setExportStatus('Finding React roots...');
+      findings.react = await probeReact();
+      setExportStatus('Dumping canvas DOM...');
+      findings.elements = await probeElements();
+      // Snapshot current messages
+      findings.methods = messages.filter(m => m.method !== '(unknown)');
+      setExportStatus(`Done — ${findings.globals?.length || 0} globals, ${findings.react?.length || 0} roots, ${findings.methods?.length || 0} methods. Use Copy/Download.`);
+    } catch (err) {
+      setExportStatus('Error: ' + err.message);
+    }
+    btn.disabled = false;
+  });
+
+  // ── Probe All Presets ────────────────────────────────────────────
+
+  $('#btn-probe-presets').addEventListener('click', async () => {
+    const btn = $('#btn-probe-presets');
+    btn.disabled = true;
+    findings.presets = {};
+
+    // We need the extension to be open. We'll send createElementFromPreset
+    // for a batch of presets and watch the message buffer for responses.
+    // Each preset gets a tagged request ID so we can match responses.
+    const total = KNOWN_PRESETS.length;
+    let done = 0;
+
+    for (const preset of KNOWN_PRESETS) {
+      done++;
+      setExportStatus(`Probing preset ${done}/${total}: ${preset}...`);
+
+      const reqId = 'plinth-probe-' + preset + '-' + Date.now();
+      try {
+        // Clear the buffer, send the create request, wait, then drain
+        await evalInPage(`
+          (function() {
+            window.__plinthInspectorBuffer.length = 0;
+            window.postMessage({
+              jsonrpc: '2.0',
+              id: '${reqId}',
+              method: 'createElementFromPreset',
+              params: { preset: '${preset}' }
+            }, '*');
+          })()
+        `);
+
+        // Wait for response
+        await new Promise(r => setTimeout(r, 300));
+
+        // Drain buffer and look for response
+        const captured = await evalInPage(`
+          (function() {
+            var buf = window.__plinthInspectorBuffer;
+            var items = buf.splice(0, buf.length);
+            return items;
+          })()
+        `);
+
+        // Find the response that matches our request
+        const response = captured.find(m =>
+          m.data && (m.data.id === reqId || (m.data.result && m.dir === 'in'))
+        );
+
+        if (response && response.data && response.data.result) {
+          // Try to extract child element types from the result
+          const result = response.data.result;
+          const children = [];
+          function extractChildren(obj) {
+            if (!obj || typeof obj !== 'object') return;
+            if (obj.type) children.push(obj.type);
+            if (obj.presetName) children.push(obj.presetName);
+            if (obj.children && Array.isArray(obj.children)) {
+              obj.children.forEach(extractChildren);
+            }
+            if (obj.nodes && Array.isArray(obj.nodes)) {
+              obj.nodes.forEach(extractChildren);
+            }
+          }
+          extractChildren(result);
+          findings.presets[preset] = children;
+        } else {
+          // No structured response — record what we got
+          const methodsSeen = captured
+            .filter(m => m.method !== '(unknown)')
+            .map(m => m.method);
+          findings.presets[preset] = methodsSeen.length > 0 ? methodsSeen : [];
+        }
+      } catch {
+        findings.presets[preset] = 'error';
+      }
+    }
+
+    setExportStatus(`Preset probe complete — ${Object.keys(findings.presets).length} presets tested. Use Copy/Download.`);
+    btn.disabled = false;
+  });
+
+  // ── Copy / Download ──────────────────────────────────────────────
+
+  $('#btn-copy-findings').addEventListener('click', () => {
+    const md = findingsToMarkdown();
+    // DevTools panels can't use navigator.clipboard — use execCommand fallback
+    const ta = document.createElement('textarea');
+    ta.value = md;
+    ta.style.position = 'fixed';
+    ta.style.left = '-9999px';
+    document.body.appendChild(ta);
+    ta.select();
+    try {
+      document.execCommand('copy');
+      setExportStatus('Copied to clipboard!');
+    } catch {
+      setExportStatus('Copy failed — use Download instead.');
+    }
+    document.body.removeChild(ta);
+  });
+
+  $('#btn-download-findings').addEventListener('click', () => {
+    const md = findingsToMarkdown();
+    const blob = new Blob([md], { type: 'text/markdown' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'findings.md';
+    a.click();
+    URL.revokeObjectURL(url);
+    setExportStatus('Downloaded findings.md');
   });
 
 })();

@@ -13,6 +13,49 @@ body {
   flex-direction: column;
 }
 
+/* Export bar */
+.export-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 10px;
+  background: #1a3a1a;
+  border-bottom: 1px solid #2a5a2a;
+  flex-shrink: 0;
+}
+
+.export-bar button {
+  padding: 3px 10px;
+  background: #2a5a2a;
+  border: 1px solid #3a7a3a;
+  border-radius: 3px;
+  color: #a0d0a0;
+  font-family: inherit;
+  font-size: 11px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.export-bar button:hover { background: #3a7a3a; }
+.export-bar button:active { background: #4a9a4a; }
+.export-bar button:disabled { opacity: 0.5; cursor: default; }
+
+.export-sep {
+  width: 1px;
+  height: 16px;
+  background: #3a7a3a;
+  flex-shrink: 0;
+}
+
+.export-status {
+  color: #6a9a6a;
+  font-size: 10px;
+  margin-left: 4px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 /* Tabs */
 .tabs {
   display: flex;
@@ -93,6 +136,13 @@ body {
   font-family: inherit;
   font-size: 11px;
   max-width: 200px;
+}
+
+.toolbar-sep {
+  width: 1px;
+  height: 16px;
+  background: #555;
+  flex-shrink: 0;
 }
 
 .search-input {

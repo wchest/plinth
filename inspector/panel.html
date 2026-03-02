@@ -5,6 +5,15 @@
   <link rel="stylesheet" href="panel.css">
 </head>
 <body>
+  <div class="export-bar">
+    <button id="btn-full-scan" title="Run all probes (globals + react + DOM) and format as markdown">Full Scan</button>
+    <button id="btn-probe-presets" title="Systematically create each preset, capture child structures">Probe All Presets</button>
+    <span class="export-sep"></span>
+    <button id="btn-copy-findings">Copy Findings</button>
+    <button id="btn-download-findings">Download findings.md</button>
+    <span id="export-status" class="export-status"></span>
+  </div>
+
   <nav class="tabs">
     <button class="tab active" data-tab="globals">Globals</button>
     <button class="tab" data-tab="messages">Messages</button>
@@ -17,6 +26,9 @@
     <div class="toolbar">
       <button id="btn-scan-window">Scan Window</button>
       <button id="btn-find-react">Find React Roots</button>
+      <button id="btn-deep-probe" title="Deep-inspect wf, _webflow, wfenvironment, webflowInitialData">Deep Probe</button>
+      <span class="toolbar-sep"></span>
+      <button id="btn-whtml-playground" title="Explore Webflow's internal WHTML/WFDL playground">WFDL Playground</button>
     </div>
     <div id="globals-output" class="output"></div>
   </div>
@@ -39,6 +51,14 @@
     <div class="toolbar">
       <button id="btn-dump-elements">Dump All Elements</button>
       <button id="btn-inspect-selected">Inspect Selected</button>
+      <span class="toolbar-sep"></span>
+      <button id="btn-export-wfdl" title="Probe all stores for page tree and WFDL data">Export WFDL</button>
+      <button id="btn-dump-tree" title="Extract the full AbstractNodeStore tree (page DOM)">Dump Node Tree</button>
+      <button id="btn-validate-wfdl" title="Validate a WFDL string without adding to canvas">Validate WFDL</button>
+      <button id="btn-wfdl-lab" title="Test WFDL snippets for each element type via validateWFDL">WFDL Element Lab</button>
+      <span class="toolbar-sep"></span>
+      <button id="btn-test-add" title="Test wf.addToCanvas with a simple WFDL string" style="background:#2a4a2a;color:#8f8">Test addToCanvas</button>
+      <span id="lab-status" class="export-status"></span>
     </div>
     <div id="elements-output" class="output"></div>
     <div class="paste-section">
