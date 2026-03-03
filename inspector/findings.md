@@ -1087,17 +1087,387 @@ Claude → MCP Server → WebSocket → Content Script (MAIN world) → ELEMENT_
 - Claude sends build commands through MCP → WebSocket → content script dispatches `ELEMENT_ADDED` directly
 - Designer Extension remains installed as a fallback for operations not yet reverse-engineered
 
+### Style Dispatch — Spy All Capture (2026-03-02)
+
+The Spy All tool (588 total dispatches, 100 captured) revealed the complete style change dispatch flow:
+
+#### 3-Phase Style Flow
+
+```
+SET_STYLE_STARTED
+  → __DEPRECATED__STYLE_BLOCK_STATE_CHANGED (×N, ephemeral=true)  ← live preview
+  → SET_STYLE_ENDED (commit=true)                                  ← finalize
+  → MULTIPLAYER_DATA_UPDATES_ACCEPTED (operations.styles)           ← persist to server
+```
+
+#### `__DEPRECATED__STYLE_BLOCK_STATE_CHANGED` Payload
+
+| Key | Type | Description |
+|-----|------|-------------|
+| `styleState` | Object (500+ keys) | Full computed CSS in camelCase (WebkitTextFillColor, alignContent, etc.) |
+| `styleBlockState` | StyleBlockState (Immutable.js) | Has `_map`, `__ownerID`; supports `.get()`, `.toJS()` |
+| `nodeNativeId` | String | Element being styled |
+| `expectedStyleRuleGuid` | String | Format: `styleBlockId:breakpoint` (e.g., `"aa8cd82d-...:main"`) |
+| `autoCreatedStyleBlockGuid` | String/null | Non-null when creating a new class |
+| `ruleRemoved` | Boolean | Whether a rule was removed |
+| `ephemeral` | Boolean | true=live preview, false=committed |
+| `meta` | Object | `{fromActionCreator: true}` |
+
+#### `SET_STYLE_ENDED` Payload
+
+| Key | Type | Description |
+|-----|------|-------------|
+| `commit` | Boolean | true to persist the change |
+| `oldStates` | Object | `{style: ..., styleBlock: ...}` for undo |
+
+#### `MULTIPLAYER_DATA_UPDATES_ACCEPTED` (style sync)
+
+| Key | Type | Description |
+|-----|------|-------------|
+| `messageId` | String | Multiplayer message ID |
+| `pageId` | String | Page being edited |
+| `operations` | Object | `{styles: ...}` — the persisted style diff |
+
+#### Other Style-Adjacent Actions
+
+- `CANVAS_BODY_RENDERED` (3x) — re-render after style change, carries `computedStyle`
+- `STYLE_SHEET_RENDERED` (1x) — stylesheet recomputed
+
+#### CMS/Dynamic Actions Found
+
+| Action | Payload Keys | Description |
+|--------|-------------|-------------|
+| `DYNAMIC_NODE_SUBSCRIBED` | `nativeId, invocationId` | Element subscribes to CMS data |
+| `DYNAMIC_NODES_UPDATED` | `nodes` | CMS data pushed to elements |
+| `DYNAMIC_NODE_UNSUBSCRIBED` | `nativeId, invocationId` | Unsubscribe |
+| `RAW_ITEMS_RECEIVED` | `items, mergeExistingItemsTogether` | CMS items loaded |
+| `DYN_FIELD_MODIFIED_ON_CANVAS` | `field, item, value, hasError` | Live CMS field edit (value="Carlo") |
+| `DYN_VARIANTS_PROCESSED` | - | Dynamic variants applied |
+
+#### Text Editing Actions
+
+| Action | Key Payload Fields |
+|--------|--------------------|
+| `NODE_TEXT_EDITING_STARTED` | `seedId, nativeIdPath, subtree, parsedSelection, breakOutSpanLinks, item, field` |
+
+#### Full Action Type Inventory (spy-all capture)
+
+| Action Type | Count | Category |
+|-------------|-------|----------|
+| AUDIT_BEGAN | 18 | Noise |
+| AUDIT_FINISHED | 17 | Noise |
+| DRAG_STOP | 13 | Interaction |
+| __PANELS_INTERNAL__PANE_CLOSED | 6 | UI |
+| UPDATE_INITIAL_DRAG_INFO | 6 | Interaction |
+| NODE_CLICKED | 6 | Interaction |
+| CANVAS_BODY_RENDERED | 3 | Render |
+| __DEPRECATED__STYLE_BLOCK_STATE_CHANGED | 3 | **Style** |
+| SYSTEM_BECAME_IDLE | 2 | System |
+| __DEPRECATED__RULE_SELECTED | 2 | **Style** |
+| RESPONSIVE_IFRAME_STYLE_SYNCED | 2 | **Style** |
+| DYNAMIC_NODE_SUBSCRIBED | 2 | **CMS** |
+| DYNAMIC_NODES_UPDATED | 2 | **CMS** |
+| DYNAMIC_NODE_RENDER_MANUALLY_TRIGGERED | 2 | **CMS** |
+| DYNAMIC_NODE_UNSUBSCRIBED | 2 | **CMS** |
+| MULTIPLAYER_TAB_BECAME_VISIBLE | 1 | System |
+| SET_STYLE_STARTED | 1 | **Style** |
+| SET_STYLE_ENDED | 1 | **Style** |
+| MULTIPLAYER_MESSAGES_SENT | 1 | Sync |
+| STYLE_SHEET_RENDERED | 1 | **Style** |
+| MULTIPLAYER_DATA_UPDATES_ACCEPTED | 1 | Sync |
+| CONTEXTUAL_ONBOARDING_EVENTS_FOUND | 1 | UI |
+| IX3_ELEMENT_INTERACTIONS_UPDATED | 1 | Interactions |
+| NODE_IN_INSTANCE_DOUBLE_CLICKED | 1 | Interaction |
+| TAB_SELECTED | 1 | UI |
+| RAW_ITEMS_RECEIVED | 1 | **CMS** |
+| NODE_TEXT_EDITING_STARTED | 1 | Editing |
+| DYN_VARIANTS_PROCESSED | 1 | **CMS** |
+| DYN_FIELD_MODIFIED_ON_CANVAS | 1 | **CMS** |
+| SHOW_DEFAULT_ELEMENT_LABELS_STARTED | 1 | UI |
+| MODIFIER_KEYS_CHANGED | 1 | Input |
+
+### Deep Style Spy Results (2026-03-02)
+
+Captured a background-color change from `#2C4A3E` to `hsla(155.99..., 28.63%, 63.75%, 1.00)` on element `9d50b039-...`.
+
+#### The Key: `meta.fromActionCreator`
+
+Every `__DEPRECATED__STYLE_BLOCK_STATE_CHANGED` carries metadata revealing the exact action creator call:
+
+```json
+{
+  "type": "StyleActionCreators::setStyle",
+  "params": {
+    "path": "backgroundColor",         // camelCase CSS property
+    "value": "hsla(155.99..., 28.63%, 63.75%, 1.00)"  // HSLA string
+  },
+  "localValue": "#2C4A3E",             // hex equivalent (before change)
+  "localUnit": null                    // null for colors; used for px/em/% etc
+}
+```
+
+**This means**: to set a style programmatically, we need to find and call `StyleActionCreators.setStyle({path, value})` — it handles all the complex state mutation internally.
+
+#### Complete Style Change Timeline
+
+| Time (ms) | Action | Details |
+|-----------|--------|---------|
+| 0 | `SET_STYLE_STARTED` | No payload — opens edit session |
+| +21 | `STYLE_BLOCK_STATE_CHANGED` | `ephemeral: true` — first preview |
+| +183 | `STYLE_BLOCK_STATE_CHANGED` | `ephemeral: true` — second preview |
+| +208 | `STYLE_BLOCK_STATE_CHANGED` | `ephemeral: false` — **committed** |
+| +232 | `SET_STYLE_ENDED` | `commit: true`, saves `oldStates` for undo |
+| +380 | `STYLE_SHEET_RENDERED` | Canvas re-renders with new style |
+| +1106 | `MULTIPLAYER_DATA_UPDATES_ACCEPTED` | Persisted to Webflow server |
+
+#### StyleBlockState — Immutable.js Record (13 keys)
+
+```
+StyleBlockState {
+  breakpoints: {main, medium, small, tiny}           // responsive breakpoints
+  styleBlocks: {guid: StyleBlockRecord, ...}         // each class is a style block
+  affectsMap: {guid: [...elementIds], ...}            // which elements use each class
+  parentIndex: {}                                    // parent class inheritance
+  globalOrder: [guid, guid, ...]                     // class ordering
+  changedRule: {guid, ephemeral, oldValues}           // tracks current edit
+  _hack_addedRuleGuid: null                          // non-null when new class created
+  migrations: {stylesNext: ...}                      // migration state
+  cssPropertyMap: {guid: {breakpoint: {prop: val}}}  // THE CSS DATA per breakpoint
+  styleBlockIds: [guid, ...]                         // all class GUIDs
+  baseStyleBlockIds: []                              // inherited styles
+  branchId: null
+  __HACK__assetHoverRestorePoint: null
+}
+```
+
+#### Style Rule GUID Format
+
+`expectedStyleRuleGuid: "49875b63-9b96-d878-3deb-e74e206ac5f9:main"`
+
+Format: `styleBlockGuid:breakpoint` where breakpoint is one of `main`, `medium`, `small`, `tiny`.
+
+#### styleState — 489 camelCase CSS Properties
+
+All 489 values are **objects** (not strings). Each CSS property in the styleState is a complex resolved object, not a simple value. The styleState is the full computed style used for rendering.
+
+Non-default sample properties (all typed as "object"):
+`WebkitTextFillColor`, `textStrokeColor`, `accentColor`, `alignContent`, `alignItems`, `backgroundColor`, `border`, `borderBlock*`, `backgroundImages`, `backdropFilters`, `animation*`, etc.
+
+#### Multiplayer Style Persistence Format
+
+When a style change is synced to the server, it creates exactly **two operations** per property:
+
+**Operation 1 — styleLess (compiled style)**:
+```json
+{
+  "type": "update",
+  "oldValue": {"type": "Primitive", "value": "#2C4A3E"},
+  "value": {"type": "Primitive", "value": "hsla(...)"},
+  "path": [
+    {"in": "ImmutableRecord", "at": "styleBlocks"},
+    {"in": "ImmutableMap", "at": "49875b63-..."},        // style block GUID
+    {"in": "StyleBlockRecord", "at": "styleLess"},
+    {"in": "StyleLess", "at": "background-color", "index": 8}
+  ]
+}
+```
+
+**Operation 2 — cssPropertyMap (breakpoint-specific CSS)**:
+```json
+{
+  "type": "update",
+  "oldValue": {"type": "Primitive", "value": "#2C4A3E"},
+  "value": {"type": "Primitive", "value": "hsla(...)"},
+  "path": [
+    {"in": "ImmutableRecord", "at": "cssPropertyMap"},
+    {"in": "ImmutableMap", "at": "49875b63-..."},        // same style block
+    {"in": "ImmutableOrderedMap", "at": "main"},          // breakpoint
+    {"in": "ImmutableOrderedMap", "at": "background-color", "index": 8}
+  ]
+}
+```
+
+CSS property names in the persistence layer use **kebab-case** (`background-color`), while the styleState uses **camelCase** (`backgroundColor`).
+
+#### Approach: Programmatic Style Setting
+
+**Best path**: Find `StyleActionCreators.setStyle()` in webpack modules and call it directly:
+```js
+// Hypothetical — need to locate the actual function
+StyleActionCreators.setStyle({ path: 'backgroundColor', value: 'red' });
+```
+
+This would handle all the complex state mutation (Immutable.js records, changedRule tracking, ephemeral states, breakpoint mapping) internally, exactly as the Designer UI does.
+
+**Alternative**: Dispatch `__DEPRECATED__STYLE_BLOCK_STATE_CHANGED` manually with:
+- Current `_webflow.state.StyleBlockStore` as `styleBlockState`
+- Modified `changedRule` pointing at the target property
+- Current computed styleState from `_webflow.state.StyleStore`
+
+But this requires constructing 489-key complex objects — risky without the exact internal format.
+
+#### Next: Find StyleActionCreators in Webpack
+
+Need a probe to:
+1. Search webpack module cache for `StyleActionCreators` or `setStyle`
+2. Check `_webflow.creators` for style-related entries
+3. Or find the module ID that exports `setStyle`
+
+### Complete Creator Namespace Map (37 namespaces, 2026-03-02)
+
+All at `_webflow.creators.<Name>`. Every creator also has `dispatch(1)`, `getStoreState(1)`, `getState(0)`, `__DEPRECATED__getCreators(1)` — omitted below.
+
+#### Style & CSS — PROVEN WORKING
+
+| Method | Arity | Status |
+|--------|-------|--------|
+| `StyleActionCreators.setStyle` | 1 | **WORKING** — `{path: "backgroundColor", value: "red"}` |
+| `StyleActionCreators.setStyles` | 1 | Untested — likely batch `[{path, value}, ...]` |
+| `StyleActionCreators.startSetStyle` | 0 | **WORKING** — opens edit session |
+| `StyleActionCreators.endSetStyle` | 1 | **WORKING** — `{commit: true}` |
+| `StyleActionCreators.stylePeekStart` | 1 | Preview hover start |
+| `StyleActionCreators.stylePeekEnd` | 0 | Preview hover end |
+| `StyleActionCreators.setParentStyles` | 1 | Set inherited/parent styles |
+
+#### Elements & Canvas
+
+| Method | Arity | Notes |
+|--------|-------|-------|
+| `DragDropActionCreators.postDropNewElement` | 1 | Element drop handler (discovered in probe #13) |
+| `DragDropActionCreators.startDraggingNode` | 1 | Start drag |
+| `DragDropActionCreators.handleDragging` | 1 | During drag |
+| `DragDropActionCreators.handleSorting` | 1 | Sort/reorder |
+| `DragDropActionCreators.stopDragging` | 0 | End drag |
+| `DragDropActionCreators.updateAssetIdOnLiteral` | 1 | Asset reference update |
+| `NavigatorActionCreators.expandAllNodes` | 0 | Navigator expand |
+| `NavigatorActionCreators.collapseAllNodes` | 0 | Navigator collapse |
+| `NavigatorActionCreators.toggleNode` | 1 | Toggle specific node |
+| `EmbedEditorActionCreators.showEmbedEditor` | 1 | Open embed code editor |
+| `EmbedEditorActionCreators.embedEditorTextChanged` | 2 | Edit embed code |
+
+#### CMS — Collections, Fields, Items
+
+| Method | Arity | Notes |
+|--------|-------|-------|
+| `CollectionActionCreators.mintCollection` | 1 | Create new collection |
+| `CollectionActionCreators.duplicateCollection` | 1 | Duplicate collection |
+| `CollectionActionCreators.modifyCollection` | 1 | Edit collection |
+| `CollectionActionCreators.saveCollection` | 0 | Save changes |
+| `CollectionActionCreators.deleteCollection` | 0 | Delete collection |
+| `CollectionActionCreators.applyCollectionPreset` | 1 | Apply preset |
+| `CollectionFieldActionCreators.mintField` | 0 | Create new field |
+| `CollectionFieldActionCreators.duplicateField` | 0 | Duplicate field |
+| `CollectionFieldActionCreators.selectFieldType` | 2 | Set field type |
+| `CollectionFieldActionCreators.modifyField` | 1 | Edit field |
+| `CollectionFieldActionCreators.reorderField` | 1 | Reorder fields |
+| `CollectionFieldActionCreators.saveField` | 0 | Save field |
+| `CollectionFieldActionCreators.deleteField` | 0 | Delete field |
+| `ItemActionCreators.mintItem` | 1 | Create new CMS item |
+| `ItemActionCreators.aiGenerateNewItem` | 0 | **AI-generate CMS item** |
+| `ItemActionCreators.modifyItem` | 1 | Edit item |
+| `ItemActionCreators.saveItem` | 0 | Save item |
+| `ItemActionCreators.saveItemAndPublish` | 0 | Save + publish |
+| `ItemActionCreators.duplicateItem` | 0 | Duplicate item |
+| `ItemActionCreators.archiveItem` | 0 | Archive item |
+| `ItemActionCreators.generateSampleItems` | 2 | Generate sample data |
+| `BindingContextActionCreators.switchCurrentItem` | 1 | Switch CMS binding context |
+
+#### Page & Site Management
+
+| Method | Arity | Notes |
+|--------|-------|-------|
+| `PageActionCreators.mintPage` | 2 | Create new page |
+| `PageActionCreators.savePage` | 1 | Save page |
+| `PageActionCreators.duplicatePage` | 1 | Duplicate page |
+| `PageActionCreators.destroyPage` | 1 | Delete page |
+| `PageActionCreators.switchPage` | 1 | Navigate to page |
+| `PageActionCreators.changeHomePage` | 1 | Set homepage |
+| `PageActionCreators.mintFolder` | 0 | Create folder |
+| `PublishDropdownActionCreators.publishSite` | 1 | **PUBLISH SITE** |
+| `PublishDropdownActionCreators.unpublishDomain` | 1 | Unpublish domain |
+| `PublishDropdownActionCreators.loadDomainData` | 1 | Load domain info |
+| `SiteDataActionCreators.importSiteData` | 3 | Import site data |
+
+#### Editor / CMS Editor
+
+| Method | Arity | Notes |
+|--------|-------|-------|
+| `EditorSiteActionCreators.saveBoundValue` | 1 | **Save CMS-bound value** |
+| `EditorSiteActionCreators.changeStyleBlock` | 1 | Change style block |
+| `EditorSiteActionCreators.publishSite` | 1 | Publish (editor path) |
+| `EditorSiteActionCreators.uploadImage` | 1 | Upload image |
+| `EditorSiteActionCreators.importSwatches` | 1 | Import color swatches |
+| `EditorSiteActionCreators.importStyleVariables` | 1 | **Import style variables** |
+| `EditorSiteActionCreators.importStylesData` | 1 | Import styles |
+| `EditorSiteActionCreators.startEditingNode` | 1 | Start editing element |
+| `EditorSiteActionCreators.saveStaticNode` | 1 | Save static content |
+| `EditorSiteActionCreators.saveDynItem` | 1 | Save dynamic CMS item |
+
+#### Undo/Redo
+
+| Method | Arity | Notes |
+|--------|-------|-------|
+| `UndoRedoActionCreators.undo` | 1 | Undo last action |
+| `UndoRedoActionCreators.redo` | 1 | Redo |
+
+#### Interactions (IX)
+
+| Method | Arity | Notes |
+|--------|-------|-------|
+| `IXActionCreators.createMacro` | 0 | Create interaction |
+| `IXActionCreators.removeMacro` | 1 | Delete interaction |
+| `IXActionCreators.duplicateMacro` | 1 | Copy interaction |
+| `IXActionCreators.assignMacroToNode` | 2 | Bind interaction to element |
+| `IXActionCreators.createAndAssignMacro` | 0 | Create + bind in one call |
+| `IXActionCreators.selectTriggerType` | 1 | Set trigger type |
+| `IXActionCreators.changeMacroStep` | 1 | Edit step |
+| `IXActionCreators.startPreview` | 0 | Preview animation |
+| `IXActionCreators.endPreview` | 0 | Stop preview |
+
+#### UI & Notifications
+
+| Method | Arity | Notes |
+|--------|-------|-------|
+| `NotificationActionCreators.dispatchNotification` | 2 | Show notification |
+| `NotificationActionCreators.error` | 2 | Show error notification |
+| `NotificationActionCreators.info` | 2 | Show info notification |
+| `UiActionCreators.disablePreviewMode` | 0 | Exit preview |
+| `UiActionCreators.togglePublishDropdown` | 0 | Toggle publish UI |
+| `OutlineActionCreators.showFlexOrGridParentOutline` | 0 | Debug outlines |
+
+#### Assets
+
+| Method | Arity | Notes |
+|--------|-------|-------|
+| `AssetActionCreators.unregisterAsset` | 1 | Remove asset |
+| `AssetActionCreators.updateMetadata` | 1 | Update asset metadata |
+
+#### Branching (staging/dev)
+
+| Method | Arity | Notes |
+|--------|-------|-------|
+| `BranchActionCreators.createBranch` | 3 | Create branch |
+| `BranchActionCreators.mergeBranch` | 1 | Merge branch |
+| `BranchActionCreators.destroyBranch` | 1 | Delete branch |
+
+#### Export
+
+| Method | Arity | Notes |
+|--------|-------|-------|
+| `ExportActionCreators.prepareClicked` | 0 | Prepare code export |
+| `ExportActionCreators.zipGenerated` | 1 | Export generated |
+
 ### Still Need to Probe
 
-These dispatch actions / action creators have NOT been reverse-engineered yet:
-
-| Action Creator Namespace | Purpose | Status |
-|---|---|---|
-| **StyleActionCreators** | CSS class creation, style property updates | Not probed |
-| **BindingContextActionCreators** | CMS data binding to elements | Not probed |
-| **CollectionActionCreators** | CMS collection operations | Not probed |
-| **CollectionFieldActionCreators** | CMS field operations | Not probed |
-| **PageActionCreators** | Save, publish, page settings | Not probed |
+| Creator | Method | Why |
+|---------|--------|-----|
+| `StyleActionCreators` | `setStyles(1)` | Batch style setting — likely more efficient |
+| `EditorSiteActionCreators` | `importStyleVariables(1)` | Programmatic CSS variable creation |
+| `EditorSiteActionCreators` | `saveBoundValue(1)` | CMS field binding |
+| `PublishDropdownActionCreators` | `publishSite(1)` | Programmatic publish |
+| `CollectionActionCreators` | `mintCollection(1)` / `modifyCollection(1)` | CMS collection CRUD |
+| `ItemActionCreators` | `mintItem(1)` / `modifyItem(1)` | CMS item CRUD |
+| `PageActionCreators` | `mintPage(2)` / `savePage(1)` | Page management |
 
 ### Designer Extension as Fallback
 

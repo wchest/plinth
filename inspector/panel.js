@@ -2238,9 +2238,623 @@
     return lines.join('\n            ');
   }
 
+  // ── Find setStyle: locate StyleActionCreators in webpack ──────────
+
+  $('#btn-find-setstyle').addEventListener('click', async () => {
+    builderOutput.innerHTML = '<span class="info">Searching webpack modules for StyleActionCreators.setStyle...</span>';
+    try {
+      const code = `
+        (function() {
+          var results = {};
+
+          // ── Strategy 1: Check _webflow.creators ──
+          var creators = window._webflow?.creators;
+          if (creators) {
+            var creatorKeys = Object.keys(creators);
+            results.creatorsCount = creatorKeys.length;
+            // Find anything with "style" (case-insensitive)
+            var styleCreators = creatorKeys.filter(function(k) {
+              return k.toLowerCase().indexOf('style') >= 0;
+            });
+            results.styleCreatorKeys = styleCreators;
+            // Probe each style creator
+            results.styleCreatorDetails = {};
+            styleCreators.forEach(function(k) {
+              var c = creators[k];
+              var detail = { type: typeof c };
+              if (typeof c === 'object' && c !== null) {
+                detail.keys = Object.keys(c).slice(0, 30);
+                // Check for setStyle
+                if (typeof c.setStyle === 'function') {
+                  detail.hasSetStyle = true;
+                  detail.setStyleArity = c.setStyle.length;
+                  detail.setStyleStr = String(c.setStyle).slice(0, 200);
+                }
+                // Check for other style methods
+                var methods = Object.keys(c).filter(function(m) { return typeof c[m] === 'function'; });
+                detail.methods = methods.slice(0, 30);
+              } else if (typeof c === 'function') {
+                detail.arity = c.length;
+                detail.str = String(c).slice(0, 200);
+              }
+              results.styleCreatorDetails[k] = detail;
+            });
+            // Also check for setStyle at top level of any creator
+            var setStyleIn = creatorKeys.filter(function(k) {
+              var c = creators[k];
+              return c && typeof c === 'object' && typeof c.setStyle === 'function';
+            });
+            results.creatorsWithSetStyle = setStyleIn;
+          } else {
+            results.creatorsCount = 0;
+            results.noCreators = true;
+          }
+
+          // ── Strategy 2: Search _webflow for setStyle directly ──
+          var wf = window._webflow;
+          if (wf) {
+            if (typeof wf.setStyle === 'function') {
+              results.wfSetStyle = { arity: wf.setStyle.length, str: String(wf.setStyle).slice(0, 200) };
+            }
+            // Check wf.actions or wf.actionCreators
+            ['actions', 'actionCreators', 'styleActions', 'StyleActionCreators'].forEach(function(prop) {
+              if (wf[prop]) {
+                results['wf.' + prop] = {
+                  type: typeof wf[prop],
+                  keys: typeof wf[prop] === 'object' ? Object.keys(wf[prop]).slice(0, 20) : undefined
+                };
+              }
+            });
+          }
+
+          // ── Strategy 3: Search webpack module cache ──
+          var req = window.__plinthRequire;
+          if (req && req.c) {
+            var moduleIds = Object.keys(req.c);
+            results.moduleCacheSize = moduleIds.length;
+            var found = [];
+
+            for (var i = 0; i < moduleIds.length; i++) {
+              var mid = moduleIds[i];
+              try {
+                var mod = req.c[mid];
+                if (!mod || !mod.exports) continue;
+                var exp = mod.exports;
+
+                // Check direct export
+                if (typeof exp.setStyle === 'function') {
+                  found.push({
+                    moduleId: mid,
+                    location: 'exports.setStyle',
+                    arity: exp.setStyle.length,
+                    str: String(exp.setStyle).slice(0, 300),
+                    siblingKeys: Object.keys(exp).filter(function(k) { return typeof exp[k] === 'function'; }).slice(0, 30)
+                  });
+                }
+                // Check default export
+                if (exp.default && typeof exp.default.setStyle === 'function') {
+                  found.push({
+                    moduleId: mid,
+                    location: 'exports.default.setStyle',
+                    arity: exp.default.setStyle.length,
+                    str: String(exp.default.setStyle).slice(0, 300),
+                    siblingKeys: Object.keys(exp.default).filter(function(k) { return typeof exp.default[k] === 'function'; }).slice(0, 30)
+                  });
+                }
+                // Check named exports for StyleActionCreators
+                var expKeys = Object.keys(exp);
+                for (var j = 0; j < expKeys.length; j++) {
+                  var ek = expKeys[j];
+                  if (ek.toLowerCase().indexOf('styleaction') >= 0 || ek === 'StyleActionCreators') {
+                    var sac = exp[ek];
+                    found.push({
+                      moduleId: mid,
+                      location: 'exports.' + ek,
+                      type: typeof sac,
+                      keys: typeof sac === 'object' ? Object.keys(sac).slice(0, 30) : undefined,
+                      hasSetStyle: sac && typeof sac.setStyle === 'function'
+                    });
+                  }
+                }
+              } catch(e) {}
+            }
+            results.webpackFound = found;
+          } else if (req && !req.c) {
+            // Try the chunk injection approach to get module cache
+            results.noModuleCache = true;
+            results.requireKeys = Object.keys(req).slice(0, 20);
+          } else {
+            results.noRequire = true;
+          }
+
+          // ── Strategy 4: Search via dispatch spy metadata ──
+          // The meta said "StyleActionCreators::setStyle" — search all bound dispatch functions
+          if (wf && wf._dispatch) {
+            // Look for StyleActionCreators as a global or on __WEBFLOW__ namespaces
+            var searchKeys = ['StyleActionCreators', 'styleActionCreators', 'StyleActions'];
+            searchKeys.forEach(function(sk) {
+              if (window[sk]) {
+                results['window.' + sk] = {
+                  type: typeof window[sk],
+                  keys: typeof window[sk] === 'object' ? Object.keys(window[sk]).slice(0, 20) : undefined
+                };
+              }
+            });
+          }
+
+          // ── Strategy 5: Look for bound action creators on the store/flux object ──
+          if (wf) {
+            var wfKeys = Object.keys(wf);
+            results.wfKeys = wfKeys.slice(0, 50);
+            // Look for anything that has setStyle as a method
+            var wfWithSetStyle = wfKeys.filter(function(k) {
+              try {
+                var v = wf[k];
+                return v && typeof v === 'object' && typeof v.setStyle === 'function';
+              } catch(e) { return false; }
+            });
+            results.wfKeysWithSetStyle = wfWithSetStyle;
+
+            // Check if creators has a nested structure
+            if (creators) {
+              var allCreatorKeys = Object.keys(creators);
+              // Flatten: check each creator for setStyle
+              var deepSearch = [];
+              allCreatorKeys.forEach(function(ck) {
+                try {
+                  var c = creators[ck];
+                  if (!c || typeof c !== 'object') return;
+                  var cKeys = Object.keys(c);
+                  cKeys.forEach(function(mk) {
+                    try {
+                      var m = c[mk];
+                      if (m && typeof m === 'object' && typeof m.setStyle === 'function') {
+                        deepSearch.push(ck + '.' + mk);
+                      }
+                    } catch(e) {}
+                  });
+                } catch(e) {}
+              });
+              results.deepCreatorsWithSetStyle = deepSearch;
+            }
+          }
+
+          // ── Strategy 6: Chunk injection to scan ALL modules ──
+          // If module cache is empty, use webpackChunk push to scan
+          if ((!req || !req.c || Object.keys(req.c).length === 0) && window.webpackChunk) {
+            var scanResults = [];
+            try {
+              window.webpackChunk.push([['__plinth_style_probe'], {},
+                function(__webpack_require__) {
+                  var cache = __webpack_require__.c;
+                  if (!cache) return;
+                  var mids = Object.keys(cache);
+                  for (var i = 0; i < mids.length; i++) {
+                    try {
+                      var m = cache[mids[i]];
+                      if (!m || !m.exports) continue;
+                      var e = m.exports;
+                      // Check for setStyle
+                      if (typeof e.setStyle === 'function') {
+                        scanResults.push({
+                          id: mids[i], loc: 'exports.setStyle',
+                          arity: e.setStyle.length,
+                          str: String(e.setStyle).slice(0, 300),
+                          siblings: Object.keys(e).filter(function(k) { return typeof e[k] === 'function'; }).slice(0, 30)
+                        });
+                      }
+                      if (e.default && typeof e.default === 'object' && typeof e.default.setStyle === 'function') {
+                        scanResults.push({
+                          id: mids[i], loc: 'exports.default.setStyle',
+                          arity: e.default.setStyle.length,
+                          str: String(e.default.setStyle).slice(0, 300),
+                          siblings: Object.keys(e.default).filter(function(k) { return typeof e.default[k] === 'function'; }).slice(0, 30)
+                        });
+                      }
+                      // Also find anything with "setStyle" in any nested key
+                      var eKeys = Object.keys(e);
+                      for (var j = 0; j < eKeys.length; j++) {
+                        try {
+                          var v = e[eKeys[j]];
+                          if (v && typeof v === 'object' && typeof v.setStyle === 'function' && eKeys[j] !== 'default') {
+                            scanResults.push({
+                              id: mids[i], loc: 'exports.' + eKeys[j] + '.setStyle',
+                              arity: v.setStyle.length,
+                              parentKeys: Object.keys(v).filter(function(k) { return typeof v[k] === 'function'; }).slice(0, 30)
+                            });
+                          }
+                        } catch(e2) {}
+                      }
+                    } catch(e) {}
+                  }
+                  // Save require for future use
+                  window.__plinthRequire = __webpack_require__;
+                  results.chunkModuleCacheSize = mids.length;
+                }
+              ]);
+            } catch(e) {
+              results.chunkScanError = e.message;
+            }
+            results.chunkScanResults = scanResults;
+          }
+
+          return results;
+        })()
+      `;
+
+      const result = await evalInPage(code);
+
+      let html = '<div class="success">setStyle Probe Results:</div>';
+
+      // Strategy 1: creators
+      if (result.creatorsWithSetStyle && result.creatorsWithSetStyle.length > 0) {
+        html += `<div style="color:#8f8;font-weight:bold;margin:8px 0">FOUND setStyle in _webflow.creators: ${escHtml(result.creatorsWithSetStyle.join(', '))}</div>`;
+      }
+      if (result.styleCreatorKeys && result.styleCreatorKeys.length > 0) {
+        html += `<div style="margin:4px 0"><strong style="color:#ff8">Style-related creator keys (${result.styleCreatorKeys.length}):</strong></div>`;
+        for (const [k, detail] of Object.entries(result.styleCreatorDetails || {})) {
+          html += `<div class="kv-row" style="margin:2px 0;border-bottom:1px solid #333;padding-bottom:4px">`;
+          html += `<strong style="color:#8cf">${escHtml(k)}</strong>`;
+          if (detail.hasSetStyle) html += ` <span style="color:#8f8;font-weight:bold">HAS setStyle (arity ${detail.setStyleArity})</span>`;
+          if (detail.methods) html += `<div style="font-size:10px;color:#888">methods: ${escHtml(detail.methods.join(', '))}</div>`;
+          if (detail.keys) html += `<div style="font-size:10px;color:#666">keys: ${escHtml(detail.keys.join(', '))}</div>`;
+          if (detail.setStyleStr) html += `<pre style="font-size:9px;max-height:100px;overflow:auto">${escHtml(detail.setStyleStr)}</pre>`;
+          html += `</div>`;
+        }
+      }
+
+      // Strategy 2: _webflow direct
+      if (result.wfSetStyle) {
+        html += `<div style="color:#8f8;font-weight:bold;margin:8px 0">FOUND _webflow.setStyle!</div>`;
+        html += `<pre style="font-size:9px">${escHtml(formatJson(result.wfSetStyle))}</pre>`;
+      }
+      if (result.wfKeysWithSetStyle && result.wfKeysWithSetStyle.length > 0) {
+        html += `<div style="color:#8f8;margin:4px 0">_webflow keys with setStyle: ${escHtml(result.wfKeysWithSetStyle.join(', '))}</div>`;
+      }
+
+      // Strategy 3 & 6: webpack
+      const wpFound = (result.webpackFound || []).concat(result.chunkScanResults || []);
+      if (wpFound.length > 0) {
+        html += `<div style="color:#8f8;font-weight:bold;margin:8px 0">FOUND in webpack modules (${wpFound.length} hits):</div>`;
+        for (const hit of wpFound) {
+          html += `<div class="kv-row" style="margin:4px 0;border-bottom:1px solid #333;padding-bottom:4px">`;
+          html += `<strong style="color:#ff8">Module ${escHtml(String(hit.moduleId || hit.id))}</strong>`;
+          html += ` → <span style="color:#8cf">${escHtml(hit.location || hit.loc)}</span>`;
+          if (hit.arity !== undefined) html += ` (arity ${hit.arity})`;
+          if (hit.siblings || hit.siblingKeys) {
+            const sibs = hit.siblings || hit.siblingKeys;
+            html += `<div style="font-size:10px;color:#888">sibling methods: ${escHtml(sibs.join(', '))}</div>`;
+          }
+          if (hit.parentKeys) {
+            html += `<div style="font-size:10px;color:#888">parent methods: ${escHtml(hit.parentKeys.join(', '))}</div>`;
+          }
+          if (hit.str) html += `<pre style="font-size:9px;max-height:100px;overflow:auto">${escHtml(hit.str)}</pre>`;
+          html += `</div>`;
+        }
+      }
+
+      // Deep creator search
+      if (result.deepCreatorsWithSetStyle && result.deepCreatorsWithSetStyle.length > 0) {
+        html += `<div style="color:#8f8;margin:4px 0">Deep creator paths with setStyle: ${escHtml(result.deepCreatorsWithSetStyle.join(', '))}</div>`;
+      }
+
+      // Diagnostics
+      html += `<div style="margin-top:12px;border-top:1px solid #444;padding-top:8px"><strong style="color:#888">Diagnostics:</strong></div>`;
+      html += `<div style="font-size:10px;color:#666">Creators count: ${result.creatorsCount || 0}</div>`;
+      html += `<div style="font-size:10px;color:#666">Module cache: ${result.moduleCacheSize || result.chunkModuleCacheSize || 'N/A'}</div>`;
+      if (result.wfKeys) html += `<div style="font-size:10px;color:#666">_webflow keys: ${escHtml(result.wfKeys.join(', '))}</div>`;
+      if (result.noRequire) html += `<div style="color:#fa8">No __plinthRequire — click "Test addToCanvas" first to inject webpack hook</div>`;
+      if (result.noModuleCache) html += `<div style="color:#fa8">__plinthRequire exists but .c is empty — used chunk injection fallback</div>`;
+
+      // Download full results
+      html += `<div style="margin:8px 0"><button id="btn-download-setstyle-probe" style="background:#4a2a4a;color:#f8f;padding:4px 12px">Download probe-setstyle.json</button></div>`;
+      builderOutput.innerHTML = html;
+
+      document.getElementById('btn-download-setstyle-probe')?.addEventListener('click', () => {
+        const blob = new Blob([formatJson(result)], { type: 'application/json' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url; a.download = 'probe-setstyle.json'; a.click();
+        URL.revokeObjectURL(url);
+      });
+    } catch (err) {
+      builderOutput.innerHTML = `<span class="error">Error: ${escHtml(err.message)}</span>`;
+    }
+  });
+
+  // ── Dump All Creators: enumerate all _webflow.creators namespaces ──
+
+  $('#btn-dump-creators').addEventListener('click', async () => {
+    builderOutput.innerHTML = '<span class="info">Enumerating all _webflow.creators namespaces...</span>';
+    try {
+      const code = `
+        (function() {
+          var creators = window._webflow?.creators;
+          if (!creators) return { error: '_webflow.creators not found' };
+
+          var namespaces = {};
+          var keys = Object.keys(creators);
+
+          for (var i = 0; i < keys.length; i++) {
+            var name = keys[i];
+            var c = creators[name];
+            var ns = { type: typeof c };
+
+            if (typeof c === 'object' && c !== null) {
+              var allKeys = Object.keys(c);
+              var methods = [];
+              var properties = [];
+
+              for (var j = 0; j < allKeys.length; j++) {
+                var k = allKeys[j];
+                try {
+                  var v = c[k];
+                  if (typeof v === 'function') {
+                    methods.push({ name: k, arity: v.length });
+                  } else if (k !== 'displayName') {
+                    properties.push({ name: k, type: typeof v, value: v === null ? null : typeof v === 'string' ? v.slice(0, 80) : typeof v === 'number' || typeof v === 'boolean' ? v : undefined });
+                  }
+                } catch(e) {}
+              }
+
+              ns.displayName = c.displayName || null;
+              ns.methodCount = methods.length;
+              ns.methods = methods;
+              ns.properties = properties.length > 0 ? properties : undefined;
+            } else if (typeof c === 'function') {
+              ns.arity = c.length;
+              ns.str = String(c).slice(0, 150);
+            }
+
+            namespaces[name] = ns;
+          }
+
+          return {
+            count: keys.length,
+            namespaces: namespaces
+          };
+        })()
+      `;
+
+      const result = await evalInPage(code);
+
+      if (result.error) {
+        builderOutput.innerHTML = `<span class="error">${escHtml(result.error)}</span>`;
+        return;
+      }
+
+      // Categorize namespaces by likely purpose
+      const categories = {
+        'Style & CSS': ['Style', 'CSS', 'Class', 'Font', 'Color', 'Swatch', 'Variable', 'Token'],
+        'Elements & DOM': ['Element', 'Node', 'Component', 'Drag', 'Drop', 'Canvas', 'Panel'],
+        'CMS & Data': ['Collection', 'Binding', 'Dynamic', 'Field', 'Item', 'CMS', 'Data'],
+        'Page & Site': ['Page', 'Site', 'Publish', 'Save', 'Route', 'SEO', 'Settings'],
+        'Interactions': ['Interaction', 'Animation', 'Trigger', 'IX'],
+        'Ecommerce': ['Commerce', 'Product', 'Cart', 'Checkout'],
+      };
+
+      function categorize(name) {
+        for (const [cat, keywords] of Object.entries(categories)) {
+          if (keywords.some(kw => name.toLowerCase().includes(kw.toLowerCase()))) return cat;
+        }
+        return 'Other';
+      }
+
+      // Group
+      const grouped = {};
+      for (const [name, ns] of Object.entries(result.namespaces)) {
+        const cat = categorize(name);
+        if (!grouped[cat]) grouped[cat] = [];
+        grouped[cat].push({ name, ...ns });
+      }
+
+      let html = `<div style="margin:4px 0 8px 0;display:flex;align-items:center;gap:8px">
+        <button id="btn-download-creators" style="background:#3a3a2a;color:#ff8;padding:4px 12px;font-weight:bold">Download creators-dump.json</button>
+        <span class="success" style="margin:0">${result.count} creator namespaces found</span>
+      </div>`;
+
+      for (const [cat, items] of Object.entries(grouped).sort((a, b) => a[0].localeCompare(b[0]))) {
+        html += `<div style="margin:12px 0 4px 0;color:#ff8;font-weight:bold;border-bottom:1px solid #444;padding-bottom:2px">${escHtml(cat)} (${items.length})</div>`;
+
+        for (const ns of items) {
+          html += `<div class="kv-row" style="margin:4px 0;padding:4px 0;border-bottom:1px solid #333">`;
+          html += `<strong style="color:#8cf">${escHtml(ns.name)}</strong>`;
+          if (ns.displayName) html += ` <span style="color:#666;font-size:10px">${escHtml(ns.displayName)}</span>`;
+          html += ` <span style="color:#888;font-size:10px">(${ns.methodCount} methods)</span>`;
+
+          if (ns.methods && ns.methods.length > 0) {
+            html += `<div style="font-size:10px;margin-top:2px">`;
+            for (const m of ns.methods) {
+              // Highlight key methods
+              const isKey = ['setStyle', 'setStyles', 'addElement', 'createElement', 'deleteElement',
+                'save', 'publish', 'bind', 'subscribe', 'setVariable', 'createVariable',
+                'addToCanvas', 'insertElement', 'moveElement', 'duplicateElement',
+                'setContent', 'setText', 'setProperty', 'updateStyle', 'applyStyle',
+                'createStyle', 'deleteStyle', 'renameStyle'].some(k =>
+                  m.name.toLowerCase().includes(k.toLowerCase()));
+              const color = isKey ? '#8f8' : '#aaa';
+              html += `<span style="color:${color};margin-right:8px">${escHtml(m.name)}(${m.arity})</span>`;
+            }
+            html += `</div>`;
+          }
+          html += `</div>`;
+        }
+      }
+
+      builderOutput.innerHTML = html;
+      document.getElementById('btn-download-creators')?.addEventListener('click', () => {
+        const blob = new Blob([formatJson(result)], { type: 'application/json' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url; a.download = 'creators-dump.json'; a.click();
+        URL.revokeObjectURL(url);
+      });
+    } catch (err) {
+      builderOutput.innerHTML = `<span class="error">Error: ${escHtml(err.message)}</span>`;
+    }
+  });
+
+  // ── Test setStyle: call StyleActionCreators.setStyle on selected element ──
+
+  $('#btn-test-setstyle').addEventListener('click', async () => {
+    builderOutput.innerHTML = '<span class="info">Testing StyleActionCreators.setStyle...</span>';
+    try {
+      const code = `
+        (function() {
+          var results = {};
+
+          // Get StyleActionCreators
+          var SAC = window._webflow?.creators?.StyleActionCreators;
+          if (!SAC) return { error: 'StyleActionCreators not found at _webflow.creators.StyleActionCreators' };
+          if (typeof SAC.setStyle !== 'function') return { error: 'SAC.setStyle is not a function' };
+
+          results.sacMethods = Object.keys(SAC).filter(function(k) { return typeof SAC[k] === 'function'; });
+
+          // Probe setStyle, startSetStyle, endSetStyle arities
+          results.arities = {
+            setStyle: SAC.setStyle.length,
+            setStyles: SAC.setStyles ? SAC.setStyles.length : null,
+            startSetStyle: SAC.startSetStyle ? SAC.startSetStyle.length : null,
+            endSetStyle: SAC.endSetStyle ? SAC.endSetStyle.length : null,
+            stylePeekStart: SAC.stylePeekStart ? SAC.stylePeekStart.length : null,
+            stylePeekEnd: SAC.stylePeekEnd ? SAC.stylePeekEnd.length : null
+          };
+
+          // Check what element is currently selected
+          var state = window._webflow?.state;
+          var selectedId = null;
+          if (state) {
+            // Try to find the selected node
+            var ds = state.DesignerStore;
+            if (ds) {
+              // DesignerStore likely has selectedNodeId or similar
+              var dsKeys = Object.keys(ds).slice(0, 30);
+              results.designerStoreKeys = dsKeys;
+              // Try common patterns
+              if (ds.selectedNodeId) selectedId = ds.selectedNodeId;
+              else if (ds.selectedNativeId) selectedId = ds.selectedNativeId;
+              else if (ds.selectedElementNativeId) selectedId = ds.selectedElementNativeId;
+              // Also try get() in case it's Immutable
+              if (!selectedId && typeof ds.get === 'function') {
+                try {
+                  selectedId = ds.get('selectedNodeId') || ds.get('selectedNativeId') || ds.get('selectedElementNativeId');
+                } catch(e) {}
+              }
+              results.selectedId = selectedId;
+            }
+
+            // Get the current style rule for the selected element
+            var styleStore = state.StyleBlockStore;
+            if (styleStore) {
+              results.styleStoreType = styleStore.constructor?.name;
+              results.styleStoreHasGet = typeof styleStore.get === 'function';
+            }
+          }
+
+          // Install dispatch spy to capture what setStyle sends
+          var capturedActions = [];
+          var origDispatch = window._webflow._dispatch;
+          if (!window.__plinthSpyOrig) window.__plinthSpyOrig = origDispatch;
+          var realOrig = window.__plinthSpyOrig;
+
+          window._webflow._dispatch = function(action, lane) {
+            try {
+              capturedActions.push({
+                type: action?.type,
+                payloadKeys: action?.payload ? Object.keys(action.payload).slice(0, 20) : [],
+                time: Date.now()
+              });
+            } catch(e) {}
+            return realOrig.apply(this, arguments);
+          };
+
+          // Try calling the 3-phase style change
+          try {
+            // Phase 1: start
+            results.phase1 = 'calling startSetStyle()';
+            SAC.startSetStyle();
+            results.phase1 = 'success';
+          } catch(e) {
+            results.phase1Error = e.message;
+          }
+
+          try {
+            // Phase 2: setStyle — set background-color to a test color
+            results.phase2 = 'calling setStyle({path: "backgroundColor", value: "hsla(0, 100%, 50%, 1.00)"})';
+            SAC.setStyle({ path: 'backgroundColor', value: 'hsla(0, 100%, 50%, 1.00)' });
+            results.phase2 = 'success';
+          } catch(e) {
+            results.phase2Error = e.message + '\\n' + e.stack?.slice(0, 500);
+          }
+
+          try {
+            // Phase 3: endSetStyle — commit
+            results.phase3 = 'calling endSetStyle({commit: true})';
+            SAC.endSetStyle({ commit: true });
+            results.phase3 = 'success';
+          } catch(e) {
+            results.phase3Error = e.message;
+          }
+
+          // Restore dispatch and report captured actions
+          window._webflow._dispatch = realOrig;
+          results.capturedActions = capturedActions;
+          results.capturedCount = capturedActions.length;
+
+          return results;
+        })()
+      `;
+
+      const result = await evalInPage(code);
+
+      let html = '';
+      if (result.error) {
+        html = `<span class="error">${escHtml(result.error)}</span>`;
+      } else {
+        // Show results
+        const allSuccess = result.phase1 === 'success' && result.phase2 === 'success' && result.phase3 === 'success';
+
+        if (allSuccess) {
+          html += `<div style="color:#8f8;font-weight:bold;font-size:14px;margin:8px 0">setStyle WORKED — all 3 phases succeeded!</div>`;
+        }
+
+        html += `<div style="margin:4px 0"><strong>Phase 1 (startSetStyle):</strong> <span style="color:${result.phase1 === 'success' ? '#8f8' : '#f88'}">${escHtml(result.phase1 || result.phase1Error)}</span></div>`;
+        html += `<div style="margin:4px 0"><strong>Phase 2 (setStyle):</strong> <span style="color:${result.phase2 === 'success' ? '#8f8' : '#f88'}">${escHtml(result.phase2 || result.phase2Error)}</span></div>`;
+        html += `<div style="margin:4px 0"><strong>Phase 3 (endSetStyle):</strong> <span style="color:${result.phase3 === 'success' ? '#8f8' : '#f88'}">${escHtml(result.phase3 || result.phase3Error)}</span></div>`;
+
+        if (result.capturedActions && result.capturedActions.length > 0) {
+          html += `<div style="margin:8px 0"><strong>Dispatched actions (${result.capturedCount}):</strong></div>`;
+          for (const a of result.capturedActions) {
+            html += `<div style="font-size:10px;color:#ff8;margin:2px 0">${escHtml(a.type)} <span style="color:#888">[${escHtml(a.payloadKeys.join(', '))}]</span></div>`;
+          }
+        }
+
+        if (result.selectedId) {
+          html += `<div style="margin:4px 0;font-size:10px;color:#888">Selected element: ${escHtml(result.selectedId)}</div>`;
+        } else {
+          html += `<div style="margin:4px 0;font-size:10px;color:#fa8">No element selected — select one on canvas first for targeted styles</div>`;
+        }
+
+        html += `<div style="margin:8px 0"><button id="btn-download-setstyle-test" style="background:#4a2a2a;color:#f88;padding:4px 12px">Download test-setstyle.json</button></div>`;
+      }
+
+      builderOutput.innerHTML = html;
+      document.getElementById('btn-download-setstyle-test')?.addEventListener('click', () => {
+        const blob = new Blob([formatJson(result)], { type: 'application/json' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url; a.download = 'test-setstyle.json'; a.click();
+        URL.revokeObjectURL(url);
+      });
+    } catch (err) {
+      builderOutput.innerHTML = `<span class="error">Error: ${escHtml(err.message)}</span>`;
+    }
+  });
+
   // ── Spy: Capture style and binding dispatch actions ──────────────
 
   // Generic action spy — installs on _dispatch, filters by keyword, captures full payloads
+  // Now tracks total dispatch count + noise count for diagnostics
   async function installActionSpy(filterKeywords, label) {
     const keywords = JSON.stringify(filterKeywords);
     const code = `
@@ -2251,11 +2865,21 @@
 
           // Read any previously captured actions first
           var prev = window.__plinthSpyResults || [];
+          var stats = {
+            totalDispatches: window.__plinthSpyTotal || 0,
+            noiseFiltered: window.__plinthSpyNoise || 0,
+            skippedTypes: window.__plinthSpySkipped ? Object.keys(window.__plinthSpySkipped).slice(0,20).map(function(k) {
+              return k + ' (' + window.__plinthSpySkipped[k] + 'x)';
+            }) : []
+          };
 
-          // Reset
+          // Reset counters
           window.__plinthSpyResults = [];
+          window.__plinthSpyTotal = 0;
+          window.__plinthSpyNoise = 0;
+          window.__plinthSpySkipped = {};
 
-          // Install/reinstall spy
+          // Install/reinstall spy — always get the real original
           if (!window.__plinthSpyOrig) {
             window.__plinthSpyOrig = flux._dispatch;
           }
@@ -2264,19 +2888,22 @@
 
           flux._dispatch = function(action, lane) {
             try {
+              window.__plinthSpyTotal = (window.__plinthSpyTotal || 0) + 1;
               var t = action?.type || '';
               // Filter: capture actions matching any keyword, skip noise
               var dominated = ['NODE_HOVERED','POST_MESSAGE_RECEIVED','CANVAS_SCROLL',
                 'MULTIPLAYER_PRESENCE','ANALYTICS','LEFT_SIDEBAR_SCREENSHOT',
-                'GRID_CELL_HOVERED','CANVAS_USER_SCROLL'];
+                'GRID_CELL_HOVERED','CANVAS_USER_SCROLL','AUDIT_QUEUED'];
               var isNoise = dominated.some(function(n) { return t.indexOf(n) >= 0; });
 
-              if (!isNoise) {
+              if (isNoise) {
+                window.__plinthSpyNoise = (window.__plinthSpyNoise || 0) + 1;
+              } else {
                 var matchesFilter = keywords.length === 0 || keywords.some(function(kw) {
                   return t.toUpperCase().indexOf(kw.toUpperCase()) >= 0;
                 });
 
-                if (matchesFilter && window.__plinthSpyResults.length < 50) {
+                if (matchesFilter && window.__plinthSpyResults.length < 100) {
                   var entry = {
                     type: t,
                     keys: action ? Object.keys(action).filter(function(k) { return k !== 'state' && k !== 'timestamp'; }).slice(0, 15) : [],
@@ -2307,6 +2934,10 @@
                     entry.payloadValues = vals;
                   }
                   window.__plinthSpyResults.push(entry);
+                } else if (!matchesFilter) {
+                  // Track skipped non-noise types for diagnostics
+                  if (!window.__plinthSpySkipped) window.__plinthSpySkipped = {};
+                  window.__plinthSpySkipped[t] = (window.__plinthSpySkipped[t] || 0) + 1;
                 }
               }
             } catch(e) {}
@@ -2316,7 +2947,8 @@
           return {
             installed: true,
             previousCaptures: prev.length,
-            captured: prev
+            captured: prev,
+            stats: stats
           };
         } catch(e) {
           return { error: e.message };
@@ -2326,197 +2958,437 @@
     return evalInPage(code);
   }
 
-  // Spy Styles button
-  $('#btn-spy-styles').addEventListener('click', async () => {
-    builderOutput.innerHTML = '<span class="info">Installing style action spy...</span>';
-    try {
-      const result = await installActionSpy(
-        ['STYLE', 'CLASS', 'BLOCK', 'CSS', 'PROPERTY', 'SELECTOR', 'VARIABLE', 'TOKEN', 'THEME', 'SWATCH', 'COLOR'],
-        'styles'
-      );
+  // Poll spy status — returns live counts without draining captures
+  async function pollSpyStatus() {
+    const code = `
+      (function() {
+        return {
+          total: window.__plinthSpyTotal || 0,
+          noise: window.__plinthSpyNoise || 0,
+          captured: (window.__plinthSpyResults || []).length,
+          types: (window.__plinthSpyResults || []).map(function(r) { return r.type; })
+        };
+      })()
+    `;
+    return evalInPage(code);
+  }
 
+  // Live spy status poller
+  let spyPollInterval = null;
+  function startSpyPolling(label) {
+    stopSpyPolling();
+    spyPollInterval = setInterval(async () => {
+      try {
+        const status = await pollSpyStatus();
+        const statusEl = document.getElementById('spy-live-status');
+        if (statusEl) {
+          statusEl.textContent = `[${label}] dispatches: ${status.total} | noise: ${status.noise} | captured: ${status.captured}` +
+            (status.types.length > 0 ? ` | types: ${[...new Set(status.types)].join(', ')}` : '');
+          statusEl.style.color = status.captured > 0 ? '#8f8' : '#ff8';
+        }
+      } catch(e) {}
+    }, 500);
+  }
+  function stopSpyPolling() {
+    if (spyPollInterval) {
+      clearInterval(spyPollInterval);
+      spyPollInterval = null;
+    }
+  }
+
+  // Shared: render spy capture results — download button at TOP, not buried at bottom
+  function renderSpyCaptures(result, label, filename, groupByType) {
+    stopSpyPolling();
+    const captured = result.captured;
+
+    // Download button FIRST
+    let html = `<div style="margin:4px 0 8px 0;display:flex;align-items:center;gap:8px">
+      <button id="btn-download-spy-dl" style="background:#2a4a2a;color:#8f8;padding:4px 12px;font-weight:bold">Download ${escHtml(filename)}</button>
+      <span class="success" style="margin:0">Captured ${captured.length} actions</span>
+    </div>`;
+
+    if (result.stats) {
+      html += `<div style="font-size:10px;color:#888;margin-bottom:4px">Total dispatches: ${result.stats.totalDispatches} | Noise filtered: ${result.stats.noiseFiltered}</div>`;
+      if (result.stats.skippedTypes.length > 0) {
+        html += `<div style="font-size:10px;color:#666;margin-bottom:4px">Skipped: ${escHtml(result.stats.skippedTypes.join(', '))}</div>`;
+      }
+    }
+
+    if (groupByType) {
+      const byType = {};
+      for (const a of captured) {
+        if (!byType[a.type]) byType[a.type] = [];
+        byType[a.type].push(a);
+      }
+      for (const [type, actions] of Object.entries(byType)) {
+        const first = actions[0];
+        html += `<div class="kv-row" style="margin:4px 0;border-bottom:1px solid #333;padding-bottom:4px">`;
+        html += `<strong style="color:#ff8">${escHtml(type)}</strong> <span style="color:#888">(${actions.length}x)</span>`;
+        if (first.payloadKeys) {
+          html += `<div style="font-size:10px;color:#888">keys: ${escHtml(first.payloadKeys.join(', '))}</div>`;
+        }
+        if (first.payloadValues) {
+          html += `<pre style="font-size:9px;max-height:100px;overflow:auto">${escHtml(formatJson(first.payloadValues))}</pre>`;
+        }
+        html += `</div>`;
+      }
+    } else {
+      for (const action of captured) {
+        html += `<div class="kv-row" style="margin:4px 0;border-bottom:1px solid #333;padding-bottom:4px">`;
+        html += `<strong style="color:#ff8">${escHtml(action.type)}</strong>`;
+        if (action.payloadKeys) {
+          html += `<div style="font-size:10px;color:#888">keys: ${escHtml(action.payloadKeys.join(', '))}</div>`;
+        }
+        if (action.payloadValues) {
+          html += `<pre style="font-size:9px;max-height:150px;overflow:auto">${escHtml(formatJson(action.payloadValues))}</pre>`;
+        }
+        html += `</div>`;
+      }
+    }
+
+    builderOutput.innerHTML = html;
+    document.getElementById('btn-download-spy-dl')?.addEventListener('click', () => {
+      const blob = new Blob([formatJson(captured)], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url; a.download = filename; a.click();
+      URL.revokeObjectURL(url);
+    });
+  }
+
+  // Shared: render spy "waiting" state with live polling
+  function renderSpyWaiting(result, label, instructions) {
+    let html = `<div class="success">${escHtml(label)} spy installed!</div>`;
+    if (result.stats && result.stats.totalDispatches > 0) {
+      html += `<div style="color:#888;font-size:11px;margin:4px 0">Previous run: ${result.stats.totalDispatches} dispatches, ${result.stats.noiseFiltered} noise, 0 captured</div>`;
+      if (result.stats.skippedTypes.length > 0) {
+        html += `<div style="font-size:10px;color:#666">Skipped: ${escHtml(result.stats.skippedTypes.join(', '))}</div>`;
+      }
+    }
+    html += `<div id="spy-live-status" style="color:#ff8;font-size:11px;margin:6px 0;font-family:monospace">[${escHtml(label)}] waiting for dispatches...</div>`;
+    for (const step of instructions) {
+      html += `<div class="info">${escHtml(step)}</div>`;
+    }
+    builderOutput.innerHTML = html;
+    startSpyPolling(label);
+  }
+
+  // Generic spy button handler
+  async function handleSpyButton(keywords, label, filename, groupByType, instructions) {
+    builderOutput.innerHTML = `<span class="info">Installing ${escHtml(label)} action spy...</span>`;
+    try {
+      const result = await installActionSpy(keywords, label);
       if (result.error) {
         builderOutput.innerHTML = `<span class="error">${escHtml(result.error)}</span>`;
+        stopSpyPolling();
         return;
       }
-
       if (result.captured && result.captured.length > 0) {
-        // Show previously captured actions
-        let html = `<div class="success">Captured ${result.captured.length} style-related actions:</div>`;
-        for (const action of result.captured) {
-          html += `<div class="kv-row" style="margin:4px 0;border-bottom:1px solid #333;padding-bottom:4px">`;
-          html += `<strong style="color:#ff8">${escHtml(action.type)}</strong>`;
-          if (action.payloadKeys) {
-            html += `<div style="font-size:10px;color:#888">keys: ${escHtml(action.payloadKeys.join(', '))}</div>`;
-          }
-          if (action.payloadValues) {
-            html += `<pre style="font-size:9px;max-height:150px;overflow:auto">${escHtml(formatJson(action.payloadValues))}</pre>`;
-          }
-          html += `</div>`;
-        }
-        html += `<div style="margin:8px 0"><button id="btn-download-spy">Download spy-results.json</button></div>`;
-        builderOutput.innerHTML = html;
-        document.getElementById('btn-download-spy')?.addEventListener('click', () => {
-          const blob = new Blob([formatJson(result.captured)], { type: 'application/json' });
-          const url = URL.createObjectURL(blob);
-          const a = document.createElement('a');
-          a.href = url; a.download = 'spy-styles.json'; a.click();
-          URL.revokeObjectURL(url);
-        });
+        renderSpyCaptures(result, label, filename, groupByType);
       } else {
-        builderOutput.innerHTML = `<div class="success">Style spy installed! Now:</div>
-          <div class="info">1. Select an element on the canvas</div>
-          <div class="info">2. Change a CSS property in the Style panel (e.g. background color)</div>
-          <div class="info">3. Click "Spy Styles" again to see captured actions</div>`;
+        renderSpyWaiting(result, label, instructions);
       }
     } catch (err) {
       builderOutput.innerHTML = `<span class="error">Error: ${escHtml(err.message)}</span>`;
+      stopSpyPolling();
     }
-  });
+  }
+
+  // Spy Styles button
+  $('#btn-spy-styles').addEventListener('click', () => handleSpyButton(
+    ['STYLE', 'CLASS', 'BLOCK', 'CSS', 'PROPERTY', 'SELECTOR', 'VARIABLE', 'TOKEN', 'THEME', 'SWATCH', 'COLOR'],
+    'styles', 'spy-styles.json', false,
+    ['1. Select an element on the canvas',
+     '2. Change a CSS property in the Style panel (e.g. background color)',
+     '3. Watch the live counter — click "Spy Styles" again when captured > 0']
+  ));
 
   // Spy Bindings button
-  $('#btn-spy-bindings').addEventListener('click', async () => {
-    builderOutput.innerHTML = '<span class="info">Installing binding action spy...</span>';
-    try {
-      const result = await installActionSpy(
-        ['BIND', 'COLLECTION', 'DYNAMIC', 'FIELD', 'CMS', 'ITEM', 'CONTEXT'],
-        'bindings'
-      );
-
-      if (result.error) {
-        builderOutput.innerHTML = `<span class="error">${escHtml(result.error)}</span>`;
-        return;
-      }
-
-      if (result.captured && result.captured.length > 0) {
-        let html = `<div class="success">Captured ${result.captured.length} binding-related actions:</div>`;
-        for (const action of result.captured) {
-          html += `<div class="kv-row" style="margin:4px 0;border-bottom:1px solid #333;padding-bottom:4px">`;
-          html += `<strong style="color:#ff8">${escHtml(action.type)}</strong>`;
-          if (action.payloadKeys) {
-            html += `<div style="font-size:10px;color:#888">keys: ${escHtml(action.payloadKeys.join(', '))}</div>`;
-          }
-          if (action.payloadValues) {
-            html += `<pre style="font-size:9px;max-height:150px;overflow:auto">${escHtml(formatJson(action.payloadValues))}</pre>`;
-          }
-          html += `</div>`;
-        }
-        html += `<div style="margin:8px 0"><button id="btn-download-spy-bind">Download spy-results.json</button></div>`;
-        builderOutput.innerHTML = html;
-        document.getElementById('btn-download-spy-bind')?.addEventListener('click', () => {
-          const blob = new Blob([formatJson(result.captured)], { type: 'application/json' });
-          const url = URL.createObjectURL(blob);
-          const a = document.createElement('a');
-          a.href = url; a.download = 'spy-bindings.json'; a.click();
-          URL.revokeObjectURL(url);
-        });
-      } else {
-        builderOutput.innerHTML = `<div class="success">Binding spy installed! Now:</div>
-          <div class="info">1. Select a text element inside a Collection List</div>
-          <div class="info">2. Bind it to a CMS field via "Get text from" in Settings</div>
-          <div class="info">3. Click "Spy Bindings" again to see captured actions</div>`;
-      }
-    } catch (err) {
-      builderOutput.innerHTML = `<span class="error">Error: ${escHtml(err.message)}</span>`;
-    }
-  });
+  $('#btn-spy-bindings').addEventListener('click', () => handleSpyButton(
+    ['BIND', 'COLLECTION', 'DYNAMIC', 'FIELD', 'CMS', 'ITEM', 'CONTEXT'],
+    'bindings', 'spy-bindings.json', false,
+    ['1. Select a text element inside a Collection List',
+     '2. Bind it to a CMS field via "Get text from" in Settings',
+     '3. Watch the live counter — click "Spy Bindings" again when captured > 0']
+  ));
 
   // Spy All button — capture everything non-noise
-  $('#btn-spy-all').addEventListener('click', async () => {
-    builderOutput.innerHTML = '<span class="info">Installing catch-all action spy...</span>';
-    try {
-      const result = await installActionSpy([], 'all');  // empty keywords = match all
-
-      if (result.error) {
-        builderOutput.innerHTML = `<span class="error">${escHtml(result.error)}</span>`;
-        return;
-      }
-
-      if (result.captured && result.captured.length > 0) {
-        // Group by type for readability
-        const byType = {};
-        for (const a of result.captured) {
-          if (!byType[a.type]) byType[a.type] = [];
-          byType[a.type].push(a);
-        }
-        const uniqueTypes = Object.keys(byType).length;
-
-        let html = `<div class="success">Captured ${result.captured.length} actions (${uniqueTypes} unique types):</div>`;
-        for (const [type, actions] of Object.entries(byType)) {
-          const first = actions[0];
-          html += `<div class="kv-row" style="margin:4px 0;border-bottom:1px solid #333;padding-bottom:4px">`;
-          html += `<strong style="color:#ff8">${escHtml(type)}</strong> <span style="color:#888">(${actions.length}x)</span>`;
-          if (first.payloadKeys) {
-            html += `<div style="font-size:10px;color:#888">keys: ${escHtml(first.payloadKeys.join(', '))}</div>`;
-          }
-          if (first.payloadValues) {
-            html += `<pre style="font-size:9px;max-height:100px;overflow:auto">${escHtml(formatJson(first.payloadValues))}</pre>`;
-          }
-          html += `</div>`;
-        }
-        html += `<div style="margin:8px 0"><button id="btn-download-spy-all">Download spy-all.json</button></div>`;
-        builderOutput.innerHTML = html;
-        document.getElementById('btn-download-spy-all')?.addEventListener('click', () => {
-          const blob = new Blob([formatJson(result.captured)], { type: 'application/json' });
-          const url = URL.createObjectURL(blob);
-          const a = document.createElement('a');
-          a.href = url; a.download = 'spy-all.json'; a.click();
-          URL.revokeObjectURL(url);
-        });
-      } else {
-        builderOutput.innerHTML = `<div class="success">Catch-all spy installed! Now:</div>
-          <div class="info">1. Do any action in the Designer</div>
-          <div class="info">2. Click "Spy All" again to see every dispatched action</div>`;
-      }
-    } catch (err) {
-      builderOutput.innerHTML = `<span class="error">Error: ${escHtml(err.message)}</span>`;
-    }
-  });
+  $('#btn-spy-all').addEventListener('click', () => handleSpyButton(
+    [], 'all', 'spy-all.json', true,
+    ['1. Do any action in the Designer (select element, change style, etc.)',
+     '2. Watch the live counter above',
+     '3. Click "Spy All" again to see captured actions']
+  ));
 
   // Spy Variables button
-  $('#btn-spy-variables').addEventListener('click', async () => {
-    builderOutput.innerHTML = '<span class="info">Installing variable action spy...</span>';
+  $('#btn-spy-variables').addEventListener('click', () => handleSpyButton(
+    ['VARIABLE', 'TOKEN', 'SWATCH', 'THEME', 'COLOR', 'DESIGN_TOKEN', 'CSS_VAR'],
+    'variables', 'spy-variables.json', false,
+    ['1. Open Variables panel (or Style panel → use a variable)',
+     '2. Create, edit, or apply a variable/swatch',
+     '3. Watch the live counter — click "Spy Variables" again when captured > 0']
+  ));
+
+  // Deep Style Spy — captures full style payload with CSS property diffs
+  $('#btn-spy-deep-style').addEventListener('click', async () => {
+    builderOutput.innerHTML = '<span class="info">Installing deep style spy...</span>';
     try {
-      const result = await installActionSpy(
-        ['VARIABLE', 'TOKEN', 'SWATCH', 'THEME', 'COLOR', 'DESIGN_TOKEN', 'CSS_VAR'],
-        'variables'
-      );
+      const code = `
+        (function() {
+          try {
+            var flux = window._webflow;
+            if (!flux || !flux._dispatch) return { error: '_webflow._dispatch not found' };
+
+            // Read previous captures
+            var prev = window.__plinthDeepStyleResults || [];
+
+            // Reset
+            window.__plinthDeepStyleResults = [];
+            window.__plinthDeepStyleCount = 0;
+
+            // Install spy
+            if (!window.__plinthSpyOrig) {
+              window.__plinthSpyOrig = flux._dispatch;
+            }
+            var orig = window.__plinthSpyOrig;
+
+            flux._dispatch = function(action, lane) {
+              try {
+                window.__plinthDeepStyleCount = (window.__plinthDeepStyleCount || 0) + 1;
+                var t = action?.type || '';
+
+                // Capture style-related actions with DEEP payload serialization
+                if (t === '__DEPRECATED__STYLE_BLOCK_STATE_CHANGED' ||
+                    t === 'SET_STYLE_STARTED' || t === 'SET_STYLE_ENDED' ||
+                    t === 'STYLE_SHEET_RENDERED' ||
+                    t === 'MULTIPLAYER_DATA_UPDATES_ACCEPTED') {
+
+                  var entry = { type: t, time: Date.now() };
+                  var p = action?.payload;
+                  if (!p) { entry.noPayload = true; }
+                  else if (t === '__DEPRECATED__STYLE_BLOCK_STATE_CHANGED') {
+                    // Deep-capture the style change
+                    entry.nodeNativeId = p.nodeNativeId;
+                    entry.autoCreatedStyleBlockGuid = p.autoCreatedStyleBlockGuid;
+                    entry.ruleRemoved = p.ruleRemoved;
+                    entry.ephemeral = p.ephemeral;
+                    entry.expectedStyleRuleGuid = p.expectedStyleRuleGuid;
+
+                    // styleState: extract a SAMPLE of CSS properties (first 30 non-default)
+                    if (p.styleState && typeof p.styleState === 'object') {
+                      var ss = p.styleState;
+                      var ssKeys = Object.keys(ss);
+                      entry.styleStateKeyCount = ssKeys.length;
+                      // Get the computed style property name map
+                      entry.styleStateSample = {};
+                      var count = 0;
+                      for (var i = 0; i < ssKeys.length && count < 50; i++) {
+                        var k = ssKeys[i];
+                        var v = ss[k];
+                        // Skip internal keys and empty/default values
+                        if (k.startsWith('__')) {
+                          entry.styleStateSample[k] = typeof v === 'string' ? v.slice(0, 100) : typeof v;
+                          count++;
+                          continue;
+                        }
+                        if (v !== '' && v !== 'none' && v !== 'auto' && v !== 'normal' &&
+                            v !== '0px' && v !== 'rgb(0, 0, 0)' && v !== 'rgba(0, 0, 0, 0)' &&
+                            v !== 'start' && v !== 'stretch' && v !== 'visible') {
+                          entry.styleStateSample[k] = typeof v === 'string' ? v.slice(0, 200) : typeof v;
+                          count++;
+                        }
+                      }
+                    }
+
+                    // styleBlockState: probe Immutable.js structure
+                    if (p.styleBlockState) {
+                      var sbs = p.styleBlockState;
+                      entry.styleBlockState = {
+                        constructor: sbs.constructor?.name,
+                        hasMap: !!sbs._map,
+                        hasToJS: typeof sbs.toJS === 'function',
+                        hasGet: typeof sbs.get === 'function',
+                        size: sbs.size
+                      };
+                      // Try toJS() to get plain object
+                      if (typeof sbs.toJS === 'function') {
+                        try {
+                          var plain = sbs.toJS();
+                          var plainKeys = Object.keys(plain);
+                          entry.styleBlockState.keys = plainKeys.slice(0, 30);
+                          entry.styleBlockState.totalKeys = plainKeys.length;
+                          // Sample some values
+                          var sample = {};
+                          for (var j = 0; j < Math.min(plainKeys.length, 15); j++) {
+                            var pk = plainKeys[j];
+                            var pv = plain[pk];
+                            if (pv === null || pv === undefined) sample[pk] = pv;
+                            else if (typeof pv === 'string') sample[pk] = pv.slice(0, 200);
+                            else if (typeof pv === 'number' || typeof pv === 'boolean') sample[pk] = pv;
+                            else if (typeof pv === 'object') sample[pk] = { type: typeof pv, keys: Object.keys(pv).slice(0, 10), constructor: pv.constructor?.name };
+                            else sample[pk] = typeof pv;
+                          }
+                          entry.styleBlockState.sample = sample;
+                        } catch(e) {
+                          entry.styleBlockState.toJSError = e.message;
+                        }
+                      }
+                      // Try get() for known keys
+                      if (typeof sbs.get === 'function') {
+                        try {
+                          var tryKeys = ['rules', 'styles', 'breakpoints', 'variants', 'properties'];
+                          var found = {};
+                          for (var k = 0; k < tryKeys.length; k++) {
+                            var gv = sbs.get(tryKeys[k]);
+                            if (gv !== undefined) found[tryKeys[k]] = { type: typeof gv, constructor: gv?.constructor?.name, hasToJS: typeof gv?.toJS === 'function' };
+                          }
+                          entry.styleBlockState.getResults = found;
+                        } catch(e) {}
+                      }
+                    }
+
+                    // meta
+                    if (p.meta) {
+                      try { entry.meta = JSON.parse(JSON.stringify(p.meta)); } catch(e) { entry.meta = 'unserializable'; }
+                    }
+                  } else if (t === 'SET_STYLE_ENDED') {
+                    entry.commit = p.commit;
+                    if (p.oldStates) {
+                      entry.oldStatesKeys = Object.keys(p.oldStates);
+                      // Probe oldStates.style
+                      if (p.oldStates.style) {
+                        var os = p.oldStates.style;
+                        entry.oldStyleState = {
+                          constructor: os.constructor?.name,
+                          type: typeof os,
+                          keyCount: typeof os === 'object' ? Object.keys(os).length : 0
+                        };
+                      }
+                      if (p.oldStates.styleBlock) {
+                        var ob = p.oldStates.styleBlock;
+                        entry.oldStyleBlock = {
+                          constructor: ob.constructor?.name,
+                          hasToJS: typeof ob?.toJS === 'function',
+                          size: ob?.size
+                        };
+                      }
+                    }
+                  } else if (t === 'MULTIPLAYER_DATA_UPDATES_ACCEPTED') {
+                    entry.messageId = p.messageId;
+                    entry.pageId = p.pageId;
+                    if (p.operations) {
+                      entry.operationKeys = Object.keys(p.operations);
+                      // Deep-capture the operations.styles if present
+                      if (p.operations.styles) {
+                        try {
+                          var stylesOp = p.operations.styles;
+                          if (typeof stylesOp === 'object') {
+                            entry.stylesOperation = {
+                              constructor: stylesOp.constructor?.name,
+                              keys: Object.keys(stylesOp).slice(0, 20),
+                              type: typeof stylesOp
+                            };
+                            // Try to serialize
+                            try { entry.stylesOperationData = JSON.parse(JSON.stringify(stylesOp)); } catch(e) { entry.stylesOperationData = 'unserializable'; }
+                          }
+                        } catch(e) {}
+                      }
+                    }
+                  }
+
+                  if (window.__plinthDeepStyleResults.length < 30) {
+                    window.__plinthDeepStyleResults.push(entry);
+                  }
+                }
+              } catch(e) {}
+              return orig.apply(this, arguments);
+            };
+
+            return {
+              installed: true,
+              previousCaptures: prev.length,
+              captured: prev,
+              dispatchCount: window.__plinthDeepStyleCount || 0
+            };
+          } catch(e) {
+            return { error: e.message };
+          }
+        })()
+      `;
+
+      const result = await evalInPage(code);
 
       if (result.error) {
         builderOutput.innerHTML = `<span class="error">${escHtml(result.error)}</span>`;
+        stopSpyPolling();
         return;
       }
 
       if (result.captured && result.captured.length > 0) {
-        let html = `<div class="success">Captured ${result.captured.length} variable-related actions:</div>`;
+        stopSpyPolling();
+        let html = `<div style="margin:4px 0 8px 0;display:flex;align-items:center;gap:8px">
+          <button id="btn-download-spy-dl" style="background:#2a4a2a;color:#8f8;padding:4px 12px;font-weight:bold">Download spy-deep-style.json</button>
+          <span class="success" style="margin:0">Captured ${result.captured.length} style actions</span>
+        </div>`;
         for (const action of result.captured) {
           html += `<div class="kv-row" style="margin:4px 0;border-bottom:1px solid #333;padding-bottom:4px">`;
           html += `<strong style="color:#ff8">${escHtml(action.type)}</strong>`;
-          if (action.payloadKeys) {
-            html += `<div style="font-size:10px;color:#888">keys: ${escHtml(action.payloadKeys.join(', '))}</div>`;
+          if (action.ephemeral !== undefined) html += ` <span style="color:#888">[ephemeral=${action.ephemeral}]</span>`;
+          if (action.nodeNativeId) html += ` <span style="color:#8cf">${escHtml(action.nodeNativeId)}</span>`;
+          if (action.expectedStyleRuleGuid) html += `<div style="font-size:10px;color:#888">rule: ${escHtml(action.expectedStyleRuleGuid)}</div>`;
+          // Show styleState sample
+          if (action.styleStateSample) {
+            html += `<div style="font-size:10px;color:#8f8">styleState (${action.styleStateKeyCount} keys, showing non-default):</div>`;
+            html += `<pre style="font-size:9px;max-height:150px;overflow:auto">${escHtml(formatJson(action.styleStateSample))}</pre>`;
           }
-          if (action.payloadValues) {
-            html += `<pre style="font-size:9px;max-height:150px;overflow:auto">${escHtml(formatJson(action.payloadValues))}</pre>`;
+          if (action.styleBlockState) {
+            html += `<div style="font-size:10px;color:#f88">styleBlockState:</div>`;
+            html += `<pre style="font-size:9px;max-height:150px;overflow:auto">${escHtml(formatJson(action.styleBlockState))}</pre>`;
+          }
+          if (action.commit !== undefined) html += `<div style="font-size:10px;color:#8f8">commit: ${action.commit}</div>`;
+          if (action.operationKeys) html += `<div style="font-size:10px;color:#8cf">operations: ${escHtml(action.operationKeys.join(', '))}</div>`;
+          if (action.stylesOperationData) {
+            html += `<pre style="font-size:9px;max-height:150px;overflow:auto">${escHtml(formatJson(action.stylesOperationData))}</pre>`;
           }
           html += `</div>`;
         }
-        html += `<div style="margin:8px 0"><button id="btn-download-spy-var">Download spy-results.json</button></div>`;
         builderOutput.innerHTML = html;
-        document.getElementById('btn-download-spy-var')?.addEventListener('click', () => {
+        document.getElementById('btn-download-spy-dl')?.addEventListener('click', () => {
           const blob = new Blob([formatJson(result.captured)], { type: 'application/json' });
           const url = URL.createObjectURL(blob);
           const a = document.createElement('a');
-          a.href = url; a.download = 'spy-variables.json'; a.click();
+          a.href = url; a.download = 'spy-deep-style.json'; a.click();
           URL.revokeObjectURL(url);
         });
       } else {
-        builderOutput.innerHTML = `<div class="success">Variable spy installed! Now:</div>
-          <div class="info">1. Open Variables panel (or Style panel → use a variable)</div>
-          <div class="info">2. Create, edit, or apply a variable/swatch</div>
-          <div class="info">3. Click "Spy Variables" again to see captured actions</div>`;
+        // Install polling for deep style spy
+        let html = `<div class="success">Deep style spy installed!</div>`;
+        html += `<div id="spy-live-status" style="color:#ff8;font-size:11px;margin:6px 0;font-family:monospace">[deep-style] waiting...</div>`;
+        html += `<div class="info">1. Select an element on the canvas</div>
+          <div class="info">2. Change ONE CSS property (e.g. set background-color to red)</div>
+          <div class="info">3. Click "Deep Style Spy" again to get the full payload</div>`;
+        builderOutput.innerHTML = html;
+        // Custom polling for deep style spy
+        stopSpyPolling();
+        spyPollInterval = setInterval(async () => {
+          try {
+            const status = await evalInPage(`({
+              count: (window.__plinthDeepStyleResults || []).length,
+              total: window.__plinthDeepStyleCount || 0,
+              types: (window.__plinthDeepStyleResults || []).map(function(r) { return r.type; })
+            })`);
+            const el = document.getElementById('spy-live-status');
+            if (el) {
+              el.textContent = `[deep-style] dispatches: ${status.total} | style actions: ${status.count}` +
+                (status.types.length > 0 ? ` | ${[...new Set(status.types)].join(', ')}` : '');
+              el.style.color = status.count > 0 ? '#8f8' : '#ff8';
+            }
+          } catch(e) {}
+        }, 500);
       }
     } catch (err) {
       builderOutput.innerHTML = `<span class="error">Error: ${escHtml(err.message)}</span>`;
+      stopSpyPolling();
     }
   });
 
