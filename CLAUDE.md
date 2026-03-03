@@ -52,9 +52,13 @@ When the MCP server is registered, these tools are available:
 2. Orient: `get_page_snapshot` to see what's on canvas, `get_queue_status` to check for pending items
 3. Generate a BuildPlan for **one section at a time**
 4. Call `queue_buildplan(plan, wait=true)` — blocks until built, returns errors inline
-5. **Verify immediately**: call `get_page_snapshot` — confirm the section exists and structure is correct
-6. Use the section's element ID as `insertAfterElementId` for the next section
+5. **Verify — mandatory, no skipping:**
+   - `get_page_snapshot` — confirm section exists, element count is correct, no duplicates
+   - `take_screenshot(siteId, sectionClass="…")` — visually confirm layout looks right; fix anything broken before continuing
+6. Use `insertAfterSectionClass` set to the just-built section's class for the next section
 7. Repeat from step 3
+
+**Never proceed to the next section without completing both verification steps.**
 
 **Editing existing sections**: use `update_styles`, `update_content`, or `replacesSectionClass` in BuildPlan — see skill/SKILL.md for the decision guide.
 

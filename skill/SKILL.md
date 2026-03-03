@@ -88,6 +88,19 @@ Set this to the Designer element ID returned by `get_page_snapshot`. Useful when
 | `DynamoList` | Collection List | className | Child of DynamoWrapper |
 | `DynamoItem` | Collection Item | className | One item template |
 | `DynamoEmpty` | Empty State | className, text | Shown when list is empty |
+| `Slider` | Slider | className | Preset creates 2 slides; SliderSlide children reuse then extend them |
+| `SliderSlide` | Slide | className | Must be direct child of Slider — cannot be inserted standalone |
+| `Tabs` | Tabs | className | Preset creates panes; TabPane children reuse then extend them |
+| `TabPane` | Tab Pane | className | Must be direct child of Tabs — cannot be inserted standalone |
+| `QuickStack` | Quick Stack | className | Responsive stack layout; children append inside |
+| `HFlex` | Horizontal Flex | className | Horizontal flex row |
+| `VFlex` | Vertical Flex | className | Vertical flex column |
+| `Grid` | Grid | className | CSS grid container |
+| `List` | List (ul) | className | Unordered list; children should be ListItem |
+| `ListItem` | List Item (li) | className | List item; must be child of List |
+| `Blockquote` | Blockquote | className, text | `<blockquote>` element |
+| `RichText` | Rich Text Block | className | Rich text container (content set manually in Designer) |
+| `HtmlEmbed` | HTML Embed | className | Custom code embed (content set manually in Designer) |
 
 ---
 
@@ -296,24 +309,40 @@ queue_buildplan(plan, wait=true)
 - On **error**: the exact error message is returned. Fix the plan and re-queue. The failed item stays in the queue for inspection — clear it with `clear_queue` before re-queuing.
 - On **success**: returns `{ sectionClass, buildStats: { elementsCreated, stylesCreated, elapsedMs } }`. The item is automatically removed from the queue.
 
-**3. Verify — mandatory after every build**
+**3. Verify — mandatory after every build, no exceptions**
 
-First, confirm the structure:
+Do both steps every time. Do not proceed to the next section until both pass.
+
+**Step 3a — structural check:**
 ```
 get_page_snapshot(siteId)
 ```
-Check that `Section#<elementId> .{sectionClass}` appears, element count matches, key children are present, no duplicates.
+Confirm:
+- `Section#<elementId> .{sectionClass}` is present
+- Element count is plausible (matches what was built)
+- Key children (heading, container, buttons, etc.) are present
+- No duplicate sections with the same class
 
-Then, if `puppeteer-core` is installed, get a visual confirmation:
+If anything looks wrong — missing elements, wrong nesting, duplicate section — fix it before continuing. Use `update_content`, `update_styles`, `insert_elements`, or `replacesSectionClass` as appropriate.
+
+**Step 3b — visual check:**
 ```
 take_screenshot(siteId, sectionClass="hero-section")
 ```
-This publishes to the `.webflow.io` staging subdomain and returns an image of just that section. Takes ~25 seconds (20 s for Webflow's staging build + screenshot). Use `skipPublish=true` if you know the current staging is up to date.
+This publishes to the `.webflow.io` staging subdomain and returns an image of just that section. Takes ~25 seconds. Use `skipPublish=true` for subsequent screenshots in the same session (staging is already up to date).
 
-The `elementId` from the Section line in `get_page_snapshot` is what you'll pass as `insertAfterElementId` or `insertAfterSectionClass` for the next section.
+Look at the screenshot critically:
+- Layout matches the design intent (spacing, columns, alignment)
+- Text is readable and correctly placed
+- No obviously broken styles (zero-height elements, invisible text, collapsed containers)
+
+If the visual is wrong, diagnose from `get_page_snapshot` and fix with the appropriate edit tool before moving on.
+
+**Step 3c — record the element ID:**
+The `elementId` from the Section line in `get_page_snapshot` is what you'll pass as `insertAfterSectionClass` or `insertAfterElementId` for the next section. Note it now.
 
 **4. Next section**
-Set `insertAfterElementId` to the element ID found in step 3. Generate the next plan. Repeat from step 2.
+Set `insertAfterSectionClass` to the class of the section just built. Generate the next plan. Repeat from step 2.
 
 ### Common errors and fixes
 
@@ -409,7 +438,8 @@ Exactly one of `parentClass` or `afterClass` must be provided:
 **Cannot do with insert_elements:**
 - Change nesting depth of existing elements (wrapping, unwrapping)
 - Move elements to different positions
-- For those, use `replacesSectionClass` to rebuild the section
+- Create `SliderSlide` or `TabPane` elements (these must be children of `Slider`/`Tabs` in a BuildPlan — use `replacesSectionClass` to rebuild the section instead)
+- For structural changes, use `replacesSectionClass` to rebuild the section
 
 ---
 

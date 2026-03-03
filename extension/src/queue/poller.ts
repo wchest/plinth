@@ -4,6 +4,7 @@ import { checkAndSendSnapshot } from './snapshot';
 import { checkAndSendDelete } from './delete';
 import { checkAndSendUpdates } from './updates';
 import { checkAndSendInsert } from './insert';
+import { checkAndSendMove }   from './move';
 
 export interface PollerConfig {
   siteId: string;
@@ -51,6 +52,7 @@ export class BuildQueuePoller {
     await checkAndSendDelete(siteId, relayUrl);
     await checkAndSendUpdates(siteId, relayUrl);
     await checkAndSendInsert(siteId, relayUrl);
+    await checkAndSendMove(siteId, relayUrl);
 
     let items: QueueItem[];
     try {

@@ -38,6 +38,7 @@ const deleteRouter   = require('./routes/delete');
 const logRouter      = require('./routes/log');
 const updatesRouter  = require('./routes/updates');
 const insertRouter   = require('./routes/insert');
+const moveRouter     = require('./routes/move');
 
 // --- Config path resolution -------------------------------------------
 //
@@ -80,6 +81,7 @@ try {
   process.exit(1);
 }
 app.locals.siteRegistry = registry;
+app.locals.writeLog = writeLog;
 
 // --- Request logging --------------------------------------------------
 
@@ -93,7 +95,8 @@ app.use((req, res, next) => {
       path === '/snapshot/pending' ||
       path === '/delete/pending' ||
       path === '/updates/pending' ||
-      path === '/insert/pending'
+      path === '/insert/pending' ||
+      path === '/move/pending'
     )) return;
     if (res.statusCode === 200 && method === 'POST' && path.startsWith('/log/')) return;
     const ms = Date.now() - start;
@@ -117,6 +120,7 @@ app.use('/delete',   deleteRouter);
 app.use('/log',      logRouter);
 app.use('/updates',  updatesRouter);
 app.use('/insert',   insertRouter);
+app.use('/move',     moveRouter);
 
 // --- 404 handler ------------------------------------------------------
 

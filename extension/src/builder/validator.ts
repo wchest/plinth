@@ -20,7 +20,25 @@ export type ElementType =
   | 'LinkBlock'
   | 'Image'
   | 'DOM'
-  | 'DynamoWrapper';
+  | 'DynamoWrapper'
+  // Slider
+  | 'Slider'
+  | 'SliderSlide'
+  // Tabs
+  | 'Tabs'
+  | 'TabPane'
+  // Layout presets
+  | 'QuickStack'
+  | 'HFlex'
+  | 'VFlex'
+  | 'Grid'
+  // List
+  | 'List'
+  | 'ListItem'
+  // Content
+  | 'Blockquote'
+  | 'RichText'
+  | 'HtmlEmbed';
 
 export type LinkType = 'url' | 'page' | 'element' | 'email' | 'phone' | 'file';
 
@@ -113,6 +131,16 @@ const VALID_ELEMENT_TYPES = new Set<string>([
   'TextBlock', 'Button', 'TextLink', 'LinkBlock', 'Image', 'DOM',
   // CMS collection list — children are appended inside the auto-created DynamoItem
   'DynamoWrapper',
+  // Slider — children (SliderSlide) are appended into the auto-created SliderMask
+  'Slider', 'SliderSlide',
+  // Tabs — children (TabPane) are appended into the auto-created TabsContent
+  'Tabs', 'TabPane',
+  // Layout presets
+  'QuickStack', 'HFlex', 'VFlex', 'Grid',
+  // List
+  'List', 'ListItem',
+  // Content
+  'Blockquote', 'RichText', 'HtmlEmbed',
 ]);
 
 const TEXT_REQUIRED_TYPES = new Set<string>(['Paragraph', 'TextBlock', 'Button', 'TextLink']);

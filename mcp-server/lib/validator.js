@@ -7,7 +7,18 @@
 const VALID_ELEMENT_TYPES = new Set([
   'Section', 'DivBlock', 'Container', 'Heading', 'Paragraph',
   'TextBlock', 'Button', 'TextLink', 'LinkBlock', 'Image', 'DOM',
+  // CMS
   'DynamoWrapper',
+  // Slider
+  'Slider', 'SliderSlide',
+  // Tabs
+  'Tabs', 'TabPane',
+  // Layout presets
+  'QuickStack', 'HFlex', 'VFlex', 'Grid',
+  // List
+  'List', 'ListItem',
+  // Content
+  'Blockquote', 'RichText', 'HtmlEmbed',
 ]);
 
 const TEXT_REQUIRED_TYPES = new Set(['Paragraph', 'TextBlock', 'Button', 'TextLink']);

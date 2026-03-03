@@ -12,7 +12,7 @@
  *   5. Adds .plinth.json to .gitignore
  *   6. Registers the MCP server with Claude Code (project-scoped)
  *   7. Writes CLAUDE.md so Claude Code knows how to use Plinth in this project
- *   8. Copies skill/SKILL.md (BuildPlan reference) into the project
+ *   8. Writes .claude/skills/plinth/SKILL.md (Claude Code skill for BuildPlan generation)
  *
  * Usage:
  *   node /path/to/plinth/mcp-server/init.js
@@ -239,7 +239,7 @@ Plans are queued in a CMS collection and executed by a Designer Extension.
 - **MCP relay**: \`localhost:3847\`
 
 ## Architecture
-- Claude generates BuildPlan JSON (see \`skill/SKILL.md\`)
+- Claude generates BuildPlan JSON (BuildPlan rules are in the auto-loaded \`plinth\` skill)
 - Plans are written to a "_Build Queue" CMS collection on the site
 - A Designer Extension polls the queue and builds elements via the Designer API
 - Claude Code calls MCP tools directly (no manual relay needed)
@@ -273,8 +273,7 @@ Designer Extension panel to be open and connected.
 - One BuildPlan = one section (Section as root element)
 
 ## Workflow
-1. Read \`skill/SKILL.md\` and any project design system docs
-2. Orient: \`get_page_snapshot(siteId)\` to see what's on canvas, \`get_queue_status\` for pending items
+1. Orient: \`get_page_snapshot(siteId)\` to see what's on canvas, \`get_queue_status\` for pending items
 3. Generate a BuildPlan for **one section at a time**
 4. Call \`queue_buildplan(plan, wait=true)\` — blocks until built, returns errors inline
 5. **Verify immediately**: call \`get_page_snapshot\` — confirm the section exists and structure is correct
@@ -310,24 +309,32 @@ function writeClaudeMd(siteId, name) {
   return 'appended to existing CLAUDE.md';
 }
 
+const SKILL_FRONTMATTER = `---
+name: plinth
+description: Generate valid Webflow BuildPlans and use plinth MCP tools to build, verify, and edit Webflow page sections. Use this skill whenever building or editing a Webflow page with Plinth.
+---
+
+`;
+
 /**
- * Copy skill/SKILL.md from the plinth source into the project's skill/ directory.
- * Skips if the destination already exists (preserves user customisations).
+ * Write the Plinth BuildPlan reference as a Claude Code skill at
+ * .claude/skills/plinth/SKILL.md. Claude auto-discovers it and loads it
+ * whenever the task involves building Webflow pages with Plinth.
+ * Always overwrites — keeps the skill in sync with the installed plinth version.
  */
-function writeSkillMd() {
+function writeClaudeSkill() {
   if (!fs.existsSync(SKILL_SRC)) return 'source not found — skipped';
 
-  const skillDir = path.join(CWD, 'skill');
+  const skillDir = path.join(CWD, '.claude', 'skills', 'plinth');
   const dest     = path.join(skillDir, 'SKILL.md');
-
-  if (fs.existsSync(dest)) return 'already exists — skipped';
 
   if (!fs.existsSync(skillDir)) {
     fs.mkdirSync(skillDir, { recursive: true });
   }
 
-  fs.copyFileSync(SKILL_SRC, dest);
-  return 'written';
+  const content = SKILL_FRONTMATTER + fs.readFileSync(SKILL_SRC, 'utf8');
+  fs.writeFileSync(dest, content);
+  return dest;
 }
 
 // ── Main ─────────────────────────────────────────────────────────────────────
@@ -437,12 +444,12 @@ async function main() {
     console.log(warn(`skipped — ${e.message}`));
   }
 
-  // ── 8. Write skill/SKILL.md ────────────────────────────────────────────────
+  // ── 8. Write .claude/skills/plinth/SKILL.md ───────────────────────────────
 
-  process.stdout.write('Writing skill/SKILL.md… ');
+  process.stdout.write('Writing Claude Code skill… ');
   try {
-    const skillResult = writeSkillMd();
-    console.log(ok(skillResult));
+    const skillDest = writeClaudeSkill();
+    console.log(ok(skillDest));
   } catch (e) {
     console.log(warn(`skipped — ${e.message}`));
   }

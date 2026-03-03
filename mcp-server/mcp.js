@@ -798,6 +798,86 @@ async function main() {
     }
   );
 
+  // ── Move helper ───────────────────────────────────────────────────
+  async function requestMove(siteId, body) {
+    const relayUrl = registry.relayUrl;
+
+    let reqRes;
+    try {
+      reqRes = await fetch(
+        `${relayUrl}/move/request?siteId=${encodeURIComponent(siteId)}`,
+        { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }
+      );
+    } catch (e) {
+      return { error: `Cannot reach relay at ${relayUrl}. Run 'plinth dev' first.` };
+    }
+    if (!reqRes.ok) return { error: `Relay returned ${reqRes.status} for move request.` };
+
+    const deadline = Date.now() + 30_000;
+    while (Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 2000));
+      try {
+        const doneRes = await fetch(`${relayUrl}/move/done?siteId=${encodeURIComponent(siteId)}`);
+        if (doneRes.ok) return { result: await doneRes.json() };
+      } catch { /* keep polling */ }
+    }
+
+    return { error: 'Move timed out after 30 s. Make sure the Designer Extension is open.' };
+  }
+
+  // ── move_element ──────────────────────────────────────────────────
+  server.tool(
+    'move_element',
+    'Move an existing element to a new position on the canvas by CSS class name. ' +
+    'Provide either beforeClass (insert before that element) or afterClass (insert after it). ' +
+    'Works on any element type. Requires the Designer Extension to be open.',
+    {
+      siteId:      z.string().describe('The Webflow site ID'),
+      className:   z.string().describe('CSS class of the element to move'),
+      beforeClass: z.string().optional().describe('Move it immediately before the element with this class'),
+      afterClass:  z.string().optional().describe('Move it immediately after the element with this class'),
+    },
+    async ({ siteId, className, beforeClass, afterClass }) => {
+      if (!beforeClass && !afterClass) {
+        return fail('Provide beforeClass or afterClass to specify the target position.');
+      }
+      if (beforeClass && afterClass) {
+        return fail('Provide beforeClass or afterClass, not both.');
+      }
+      const { result, error } = await requestMove(siteId, { className, beforeClass, afterClass });
+      if (error) return fail(error);
+      return ok(
+        result.errors?.length
+          ? `Moved ${result.moved} element(s). Errors: ${result.errors.join('; ')}`
+          : `Moved "${className}" ${beforeClass ? `before "${beforeClass}"` : `after "${afterClass}"`}.`
+      );
+    }
+  );
+
+  // ── reorder_sections ──────────────────────────────────────────────
+  server.tool(
+    'reorder_sections',
+    'Reorder page sections by providing their CSS class names in the desired top-to-bottom order. ' +
+    'Only the listed sections are reordered — unlisted sections stay in place. ' +
+    'Use get_page_snapshot first to confirm current section order and class names. ' +
+    'Requires the Designer Extension to be open.',
+    {
+      siteId:         z.string().describe('The Webflow site ID'),
+      sectionClasses: z.array(z.string()).min(2).describe(
+        'CSS class names of the sections in the desired order (top to bottom), e.g. ["hero-section", "stats-section", "cta-section"]'
+      ),
+    },
+    async ({ siteId, sectionClasses }) => {
+      const { result, error } = await requestMove(siteId, { sectionClasses });
+      if (error) return fail(error);
+      return ok(
+        result.errors?.length
+          ? `Reordered ${result.moved} section(s). Errors: ${result.errors.join('; ')}`
+          : `Reordered ${result.moved} section(s): ${sectionClasses.join(' → ')}`
+      );
+    }
+  );
+
   // ── copy_to_webflow ───────────────────────────────────────────────
   server.tool(
     'copy_to_webflow',

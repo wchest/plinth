@@ -39,6 +39,11 @@ router.post('/:itemId', (req, res) => {
   }
   entry.messages.push(message);
 
+  // Pipe to relay terminal + log file in real time
+  const line = `  [ext] ${message}`;
+  process.stdout.write(`\x1b[2m${line}\x1b[0m\n`);
+  req.app.locals.writeLog?.(line);
+
   return res.json({ ok: true });
 });
 

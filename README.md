@@ -48,7 +48,14 @@ The Plinth MCP tools (`queue_buildplan`, `get_queue_status`, etc.) are available
    Get a **workspace-level** token from Account Settings → Integrations → API Access.
    _(Separate from the site-level token used by the relay)_
 
-3. **Open your site** in Webflow Designer → Apps panel → **Plinth Builder**
+3. **Add your fonts** in Webflow Designer before building sections.
+   Webflow has no API for font management — fonts must be loaded on the site first.
+   - Google Fonts: Designer → Typography panel → font picker
+   - Custom fonts: Site Settings → Fonts → Upload
+   - Adobe Fonts: Site Settings → Fonts → connect Typekit project
+   Once loaded, BuildPlans can reference any font by name in style properties.
+
+4. **Open your site** in Webflow Designer → Apps panel → **Plinth Builder**
    Enter `http://localhost:3847` as the relay URL → Connect.
    The extension connects to the running `plinth dev` relay — no API token needed.
 

@@ -5,6 +5,7 @@ import { discoverConfig, DiscoveredConfig } from './queue/discovery';
 import { executeBuildPlan } from './builder/executor';
 import { checkAndSendSnapshot } from './queue/snapshot';
 import { checkAndSendDelete }   from './queue/delete';
+import { checkAndSendMove }     from './queue/move';
 import { BUILD_TIME } from './version';
 
 export type { BuildResult } from './builder/executor';
@@ -182,6 +183,8 @@ export default function App() {
   const [manualJson, setManualJson] = useState('');
   const [manualError, setManualError] = useState('');
   const [manualBuilding, setManualBuilding] = useState(false);
+  const [moveTestResult, setMoveTestResult] = useState<string | null>(null);
+  const [moveTestRunning, setMoveTestRunning] = useState(false);
 
   const pollerRef = useRef<BuildQueuePoller | null>(null);
 
@@ -241,6 +244,7 @@ export default function App() {
     const id = setInterval(() => {
       checkAndSendSnapshot(siteId, relayUrl);
       checkAndSendDelete(siteId, relayUrl);
+      checkAndSendMove(siteId, relayUrl);
     }, 3000);
     return () => clearInterval(id);
   }, [storedConfig, discovered]);
@@ -263,6 +267,40 @@ export default function App() {
 
   const handleBuildNext = useCallback(async () => {
     await pollerRef.current?.processNext();
+  }, []);
+
+  const handleMoveTest = useCallback(async () => {
+    setMoveTestRunning(true);
+    setMoveTestResult(null);
+    try {
+      const root = await webflow.getRootElement() as any;
+      const divA = await root.append(webflow.elementPresets.DOM) as any;
+      const divB = await root.append(webflow.elementPresets.DOM) as any;
+      try {
+        // Try to move divA to after divB (should swap their order)
+        await (divB as any).after(divA);
+        const children = await (root as any).getChildren() as any[];
+        const idA = divA.id?.element;
+        const idB = divB.id?.element;
+        const posA = children.findIndex((c: any) => c.id?.element === idA);
+        const posB = children.findIndex((c: any) => c.id?.element === idB);
+        const worked = posA > posB && posA !== -1 && posB !== -1;
+        setMoveTestResult(
+          worked
+            ? '✅ Move works — reposition tools are enabled'
+            : '⚠️ No error but position unchanged — move may not be supported'
+        );
+      } catch (e) {
+        setMoveTestResult(`❌ Move failed: ${e instanceof Error ? e.message : String(e)}`);
+      } finally {
+        try { await (divA as any).remove(); } catch {}
+        try { await (divB as any).remove(); } catch {}
+      }
+    } catch (e) {
+      setMoveTestResult(`❌ Setup failed: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setMoveTestRunning(false);
+    }
   }, []);
 
   const handleManualBuild = useCallback(async () => {
@@ -383,6 +421,31 @@ export default function App() {
           {manualBuilding ? '⏳ Building…' : '▶ Build from JSON'}
         </button>
         {manualError && <div style={s.errorText}>{manualError}</div>}
+      </div>
+
+      {/* Dev tools */}
+      <hr style={s.divider} />
+      <div style={s.section}>
+        <div style={{ ...s.label, marginBottom: '8px' }}>Dev</div>
+        <button
+          style={{ ...s.btn, opacity: moveTestRunning ? 0.6 : 1 }}
+          onClick={handleMoveTest}
+          disabled={moveTestRunning}
+        >
+          {moveTestRunning ? '⏳ Testing…' : '🧪 Test Move API'}
+        </button>
+        {moveTestResult && (
+          <div style={{ ...s.mutedText, marginTop: '6px' }}>{moveTestResult}</div>
+        )}
+        <button
+          style={{ ...s.btn, marginTop: '6px' }}
+          onClick={() => {
+            const presets = Object.keys(webflow.elementPresets).sort().join(', ');
+            setMoveTestResult(`Presets: ${presets}`);
+          }}
+        >
+          🧪 List Element Presets
+        </button>
       </div>
 
       {/* Footer */}
