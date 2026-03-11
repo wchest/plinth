@@ -71,36 +71,101 @@ Set this to the Designer element ID returned by `get_page_snapshot`. Useful when
 
 ## Element Types
 
+### Layout
+
 | Type | Webflow Equivalent | Required Fields | Notes |
 |------|--------------------|-----------------|-------|
 | `Section` | Section | className | Root only |
 | `DivBlock` | Div Block | className | General container |
-| `Container` | Container | className | Max-width container |
-| `Heading` | Heading | className, headingLevel, text | headingLevel 1–6 |
-| `Paragraph` | Paragraph | className, text | Block text |
-| `TextBlock` | Text Block | className, text | Inline text |
-| `Button` | Button/Link | className, text, href | CTA |
-| `TextLink` | Text Link | className, text, href | Inline link |
-| `LinkBlock` | Link Block | className, href | Clickable container |
-| `Image` | Image | className, src, alt | |
-| `DOM` | Custom tag | className, domTag | For `span`, `em`, etc. |
-| `DynamoWrapper` | Collection List Wrapper | className | Root of a CMS list |
-| `DynamoList` | Collection List | className | Child of DynamoWrapper |
-| `DynamoItem` | Collection Item | className | One item template |
-| `DynamoEmpty` | Empty State | className, text | Shown when list is empty |
-| `Slider` | Slider | className | Preset creates 2 slides; SliderSlide children reuse then extend them |
-| `SliderSlide` | Slide | className | Must be direct child of Slider — cannot be inserted standalone |
-| `Tabs` | Tabs | className | Preset creates panes; TabPane children reuse then extend them |
-| `TabPane` | Tab Pane | className | Must be direct child of Tabs — cannot be inserted standalone |
-| `QuickStack` | Quick Stack | className | Responsive stack layout; children append inside |
+| `Container` | Container | className | Centered max-width container |
 | `HFlex` | Horizontal Flex | className | Horizontal flex row |
 | `VFlex` | Vertical Flex | className | Vertical flex column |
 | `Grid` | Grid | className | CSS grid container |
-| `List` | List (ul) | className | Unordered list; children should be ListItem |
-| `ListItem` | List Item (li) | className | List item; must be child of List |
-| `Blockquote` | Blockquote | className, text | `<blockquote>` element |
-| `RichText` | Rich Text Block | className | Rich text container (content set manually in Designer) |
-| `HtmlEmbed` | HTML Embed | className | Custom code embed (content set manually in Designer) |
+| `Columns` | Columns | className | Column layout (factory) |
+| `QuickStack` | Quick Stack | className | Responsive stack layout (factory) |
+
+### Typography
+
+| Type | Webflow Equivalent | Required Fields | Notes |
+|------|--------------------|-----------------|-------|
+| `Heading` | Heading | className, headingLevel, text | headingLevel 1–6 |
+| `Paragraph` | Paragraph | className, text | Block text |
+| `TextBlock` | Text Block | className, text | Inline text |
+| `BlockQuote` | Blockquote | className, text | `<blockquote>` element |
+| `RichText` | Rich Text Block | className | Rich text container (factory) |
+| `CodeBlock` | Code Block | className, text | `<pre>` code block |
+
+### Links & Buttons
+
+| Type | Webflow Equivalent | Required Fields | Notes |
+|------|--------------------|-----------------|-------|
+| `Button` | Button/Link | className, text, href | CTA |
+| `Link` | Link Block | className, href | Clickable container |
+| `TextLink` | Text Link | className, text, href | Inline link |
+
+### Media
+
+| Type | Webflow Equivalent | Required Fields | Notes |
+|------|--------------------|-----------------|-------|
+| `Image` | Image | className, src, alt | |
+| `Video` | Video | className | Video embed (factory) |
+| `YouTube` | YouTube | className | YouTube embed (factory) |
+| `BackgroundVideo` | Background Video | className | Background video (factory) |
+| `LottieAnimation` | Lottie | className | Lottie animation (factory) |
+| `Lightbox` | Lightbox | className | Lightbox wrapper (factory) |
+
+### Lists
+
+| Type | Webflow Equivalent | Required Fields | Notes |
+|------|--------------------|-----------------|-------|
+| `List` | List (ul/ol) | className | Set `ordered: true` for `<ol>` |
+| `ListItem` | List Item (li) | className | Must be child of List |
+
+### Embed
+
+| Type | Webflow Equivalent | Required Fields | Notes |
+|------|--------------------|-----------------|-------|
+| `CodeEmbed` | HTML Embed | className, code | Custom HTML/JS embed |
+
+### Forms
+
+| Type | Webflow Equivalent | Required Fields | Notes |
+|------|--------------------|-----------------|-------|
+| `FormBlock` | Form Block | className | Form wrapper (factory) |
+| `FormLabel` | Label | className, text | Form label |
+| `FormInput` | Input | className | Text input (factory) |
+| `FormTextArea` | Text Area | className | Textarea (factory) |
+| `FormSelect` | Select | className | Dropdown select (factory) |
+| `FormCheckbox` | Checkbox | className | Checkbox + label (factory) |
+| `FormRadio` | Radio Button | className | Radio + label (factory) |
+| `FormButton` | Form Button | className | Submit button |
+| `FileUpload` | File Upload | className | File upload field (factory) |
+
+### Components (complex widgets)
+
+| Type | Webflow Equivalent | Required Fields | Notes |
+|------|--------------------|-----------------|-------|
+| `Navbar` | Navbar | className | Navigation bar (factory) |
+| `Slider` | Slider | className | Slider with slides (factory) |
+| `Tabs` | Tabs | className | Tabbed content (factory) |
+| `Dropdown` | Dropdown | className | Dropdown menu (factory) |
+| `Map` | Map | className | Google Map widget (factory) |
+| `Pagination` | Pagination | className | Page navigation (factory) |
+
+### CMS
+
+| Type | Webflow Equivalent | Required Fields | Notes |
+|------|--------------------|-----------------|-------|
+| `CollectionList` | Collection List | className | CMS list wrapper (factory) |
+
+### Ecommerce
+
+| Type | Webflow Equivalent | Required Fields | Notes |
+|------|--------------------|-----------------|-------|
+| `Cart` | Cart | className | Shopping cart (factory) |
+| `AddToCart` | Add to Cart | className | Add-to-cart button (factory) |
+
+**Factory elements** are created via `instantiateFactory` — they bring their own internal structure (e.g. Slider creates slides, Navbar creates menu + brand + toggle). User-specified children are appended inside the wrapper.
 
 ---
 

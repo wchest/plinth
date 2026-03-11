@@ -1023,16 +1023,31 @@ ERecord({
 |---|---|---|
 | **Section** | `["Layout","Section"]` | `grid: ERecord({type: EText('section')})`, `tag: EEnum('section')`, `children: EList([])` |
 | **DivBlock** | `["Basic","Block"]` | `tag: EEnum('div')`, `text: EBoolean(false)`, `children: EList([])` |
+| **Container** | `["Layout","BlockContainer"]` | `tag: EEnum('div')`, `children: EList([])` |
 | **Heading** | `["Basic","Heading"]` | `tag: EEnum('h1')` through `EEnum('h6')`, `children: EList([StringChild])` |
 | **Paragraph** | `["Basic","Paragraph"]` | `children: EList([StringChild])` |
 | **Button** | `["Basic","Link"]` | `button: EBoolean(true)`, `block: EText('')`, `search: ...`, `eventIds: ...`, `children: EList([StringChild])`, `link: ELiteral({mode:'external',url:'#'})` |
 | **TextBlock** | `["Basic","Block"]` | `text: EBoolean(true)`, `tag: EEnum('div')`, `children: EList([StringChild])` |
+| **BlockQuote** | `["Basic","Blockquote"]` | `tag: EEnum('blockquote')`, `children: EList([StringChild])` |
+| **CodeBlock** | `["Basic","CodeBlock"]` | `tag: EEnum('pre')`, `children: EList([StringChild])` |
+| **List** | `["Basic","List"]` | `tag: EEnum('ul'/'ol')`, `children: EList([])` |
+| **ListItem** | `["Basic","ListItem"]` | `tag: EEnum('li')`, `children: EList([])` |
 | **HFlex** | `["Layout","HFlex"]` | `tag: EEnum('div')`, `children: EList([])` |
 | **VFlex** | `["Layout","VFlex"]` | `tag: EEnum('div')`, `children: EList([])` |
 | **Grid** | `["Layout","Grid"]` | `tag: EEnum('div')`, `children: EList([])` |
-| **Link** | `["Basic","Link"]` | `children: EList([])` |
+| **Link** | `["Basic","Link"]` | `children: EList([])`, optional `link: ELiteral(...)` |
+| **TextLink** | `["Basic","Link"]` | `children: EList([StringChild])`, `link: ELiteral(...)` |
+| **Image** | `["Basic","Image"]` | `tag: EEnum('img')`, `children: EList([])`, `xattr: EList([])`, `search: ...`, optional `alt: EText(...)` |
+| **CodeEmbed** | `["Embed","HtmlEmbed"]` | `embed: ERecord({type: EText('custom'), value: EText(code)})` |
+| **FormLabel** | `["Form","FormBlockLabel"]` | `tag: EEnum('label')`, `children: EList([StringChild])` |
+| **FormButton** | `["Form","FormButton"]` | `tag: EEnum('input')` |
 
 *StringChild* = `EElement({id, type: ['Basic','String'], data: EText('content')})`
+
+**Factory elements** (created via `instantiateFactory`, not manual EElement):
+Columns, QuickStack, RichText, Video, YouTube, BackgroundVideo, LottieAnimation,
+FormBlock, FormInput, FormTextArea, FormSelect, FormCheckbox, FormRadio, FileUpload,
+Navbar, Slider, Tabs, Dropdown, Lightbox, Map, CollectionList, Cart, AddToCart, Pagination
 
 ### idMap Key Names
 
@@ -1050,6 +1065,28 @@ The `idMap` returned by `instantiateFactory` uses these key names (note inconsis
 | `"Paragraph"` | |
 | `"Button"` | |
 | `"Grid"` | |
+| `"Container"` | |
+| `"Columns"` | |
+| `"Quick Stack"` | Space-separated |
+| `"Block Quote"` | Space-separated |
+| `"Code Block"` | Space-separated |
+| `"List"` | |
+| `"List Item"` | Space-separated |
+| `"Text Link"` | Space-separated |
+| `"Code Embed"` | Space-separated |
+| `"Form Block"` | Space-separated |
+| `"Label"` | |
+| `"Form Button"` | Space-separated |
+| `"Navbar"` | |
+| `"Slider"` | |
+| `"Tabs"` | |
+| `"Dropdown"` | |
+| `"Lightbox"` | |
+| `"Map"` | |
+| `"Collection List"` | Space-separated |
+| `"Cart"` | |
+| `"Add to Cart"` | Space-separated |
+| `"Pagination"` | |
 
 ---
 
@@ -1372,6 +1409,91 @@ All at `_webflow.creators.<Name>`. Every creator also has `dispatch(1)`, `getSto
 | `ItemActionCreators.generateSampleItems` | 2 | Generate sample data |
 | `BindingContextActionCreators.switchCurrentItem` | 1 | Switch CMS binding context |
 
+#### CMS Collection Connection (BINDING_CONTEXT_CHANGED dispatch)
+
+To connect a CollectionList to a CMS collection:
+
+```javascript
+_webflow.dispatch({ type: 'NODE_CLICKED', payload: { nativeId: dynamoWrapperId } });
+// wait 500ms
+_webflow.dispatch({
+  type: 'BINDING_CONTEXT_CHANGED',
+  payload: {
+    connection: {
+      _kind: 'LegacyDynamoWrapperConnection/Collection',
+      id: collectionId  // e.g. '699b2cd8838e85bdbae77e34'
+    }
+  }
+});
+```
+
+#### CMS Field Binding (DATA_TYPE_CHANGED dispatch)
+
+**PREREQUISITE**: Must call `setCanvasNextIframe` before DATA_TYPE_CHANGED or page crashes.
+
+```javascript
+// Step 1: Set canvas iframe reference (prevents __siteIframeNext crash)
+var iframeMod = null;
+var r = window.__plinthRequire; // webpack require
+var mids = Object.keys(r.m);
+for (var i = 0; i < mids.length; i++) {
+  try {
+    if (r.m[mids[i]].toString().indexOf('__siteIframeNext') >= 0) {
+      iframeMod = r(mids[i]);
+      break;
+    }
+  } catch(e) {}
+}
+if (iframeMod && iframeMod.Z) {
+  iframeMod.Z(document.getElementById('site-iframe-next'));
+}
+
+// Step 2: Select element
+_webflow.dispatch({ type: 'NODE_CLICKED', payload: { nativeId: elementId } });
+
+// Step 3: Dispatch bind (after 500ms settle)
+_webflow.dispatch({
+  type: 'DATA_TYPE_CHANGED',
+  payload: {
+    id: elementId,
+    initialId: crypto.randomUUID(),  // fresh UUID each time
+    action: {
+      type: 'EXPRESSION_BIND_CHANGED',
+      binding: {  // plain {type,val} objects, NOT EC constructors
+        type: 'Call',
+        val: {
+          fun: { type: 'Variable', val: ['DynamoGateway', 'dynamoPlainTextToListOfElements'] },
+          arg: { type: 'Select', val: { from: { type: 'Variable', val: 'Dynamo' }, prop: fieldSlug } }
+        }
+      },
+      key: [{ in: 'Record', at: 'children' }]
+    }
+  }
+});
+```
+
+**Gateway functions** (DynamoGateway.*):
+- `dynamoPlainTextToListOfElements` — plain text fields
+- `dynamoRichTextToListOfElements` — rich text fields
+- `dynamoImageToAttributes` — image fields
+- `dynamoLinkToAttributes` — link fields
+
+**Canvas iframe crash details**:
+- Error: `__siteIframeNext is null. Did you call SiteIframeMigrationHelper.setCanvasNextIframe?`
+- Canvas iframe: `<iframe id="site-iframe-next">` in the DOM
+- Module exports: `.Z` (setCanvasNextIframe), `.WN` (getActiveWindow), `.Dw` (getActiveIframe), `.uP` (getActiveDocument)
+- Find module by scanning `r.m[mid].toString()` for `'__siteIframeNext'` (module ID changes on deploys)
+- Only DATA_TYPE_CHANGED triggers this listener — ELEMENT_ADDED, style changes etc. don't need it
+
+**DynamoWrapper element tree** (created via ELEMENT_ADDED with factory preset):
+```
+DynamoWrapper → DynamoList → DynamoItem → [user elements go here]
+                           → DynamoEmpty (empty state)
+```
+
+**idMap keys for CollectionList**:
+`"Dynamo Wrapper"`, `"Dynamo List"`, `"Dynamo Item"`, `"Dynamo Empty"`, `"Dynamo Wrapper Block"`, `"Dynamo Wrapper String"`
+
 #### Page & Site Management
 
 | Method | Arity | Notes |
@@ -1472,6 +1594,95 @@ All at `_webflow.creators.<Name>`. Every creator also has `dispatch(1)`, `getSto
 ### Designer Extension as Fallback
 
 The existing Designer Extension architecture remains for:
-- Operations not yet reverse-engineered (styles, CMS bindings, save/publish)
+- Operations not yet reverse-engineered (CMS bindings, save/publish)
 - Sites where the Chrome extension is not installed
 - Any future Webflow API changes that break the dispatch approach
+
+---
+
+## Content Script Bridge (2026-03-09)
+
+### Architecture
+
+```
+Claude → MCP → POST /bridge/request (relay :3847)
+  → Content Script ISOLATED (polls /bridge/pending)
+  → postMessage('*') with __plinthBridge namespace
+  → Content Script MAIN (executes via _webflow.creators.*)
+  → postMessage('*') with result
+  → Content Script ISOLATED → POST /bridge/result
+  → MCP polls GET /bridge/result → Claude
+```
+
+### Files
+- `mcp-server/routes/bridge.js` — 4-endpoint relay (request/pending/result/result)
+- `inspector/content-isolated.js` — ISOLATED world: polls relay, forwards via postMessage
+- `inspector/content-bridge.js` — MAIN world: webpack capture, element creation, style dispatch
+- `mcp-server/mcp.js` — `bridge_ping`, `bridge_execute`, `bridge_build` MCP tools
+
+### Webpack Module Scanning
+
+Module IDs change on every Webflow deploy. The bridge scans `__webpack_require__.m` (module definitions) to find modules by their export signature:
+
+| Module | Signature | Old ID | 2026-03-09 ID |
+|--------|-----------|--------|---------------|
+| Expressions | `exports.Expressions && exports.Component` | 629107 | 526875 |
+| Expression Constructors | `typeof exports.EElement === 'function'` | 953932 | 384367 |
+| Tree Ops | `exports.tgb` | 591280 | 756993 |
+
+- `__webpack_require__.c` (module cache) is empty in current webpack config
+- Must evaluate modules manually: `r.m[mid](modObj, modObj.exports, r)`
+- Scanning ~10K modules takes <10s
+
+### Page Component Lookup
+
+`DesignerStore.components` uses Immutable.js Map with tuple keys, so `.get('__SitePlugin,page')` fails. Must iterate:
+```js
+dsState.components.forEach(function(v, k) {
+  if (String(k).indexOf('SitePlugin') >= 0 && String(k).indexOf('page') >= 0) pageComp = v;
+});
+```
+Body element at `pageComp.render.val` → `{id, type: ["Body","Body"], data: ...}`
+
+### Style Creation Probes
+
+| Method | Result |
+|--------|--------|
+| `EditorSiteActionCreators.changeStyleBlock({styleBlockGuid})` | Fails: "pageId undefined" — Editor context only |
+| `EditorSiteActionCreators.importStylesData({styles})` | Fails: "pages undefined" — Editor context only |
+| `SiteDataActionCreators.importSiteData({styles})` | **Crashes page** — heavy state reconciliation |
+| `StyleActionCreators.setStyle({path, value})` | Works — but requires element to be selected |
+
+Style block format (from `StyleBlockStore.styleBlocks`):
+```json
+{
+  "_id": "uuid",
+  "fake": false,
+  "type": "class",
+  "name": "Hero Section",
+  "namespace": "",
+  "comb": "",
+  "styleLess": "property: value; property2: value2;",
+  "variants": {},
+  "children": [],
+  "createdBy": null,
+  "origin": null,
+  "selector": null
+}
+```
+
+Special value syntax in `styleLess`: `@raw<|value|>` for complex values (e.g., font families, overflow).
+
+### Element Presets
+
+Available at `DesignerStore.plugins.elementPresets` (118 presets).
+- Keys: `"Basic,DivBlock"`, `"Layout,Section"`, etc.
+- Each preset has `{addTabIndex, factory, icon, label, helpData}`
+- `factory` is an expression object `{type, val}`, NOT a callable function
+- Requires `instantiateFactory` from the Expressions module to use
+
+### Key Gotchas
+- `postMessage()` MUST pass `'*'` as targetOrigin — inspector monkey-patches postMessage and passes targetOrigin through
+- Content scripts only inject on page load — must refresh Designer after extension changes
+- `host_permissions: ["http://localhost:3847/*"]` required in manifest for ISOLATED world fetch()
+- ELEMENT_ADDED with raw JS objects (not expression-constructed) crashes: "Cannot read 'cssPropertyMap'"

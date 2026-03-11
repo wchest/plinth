@@ -1,18 +1,28 @@
 {
   "manifest_version": 3,
   "name": "Plinth Inspector",
-  "description": "DevTools panel for inspecting Webflow Designer internals",
-  "version": "0.1.0",
+  "description": "DevTools panel + Bridge for Webflow Designer",
+  "version": "0.2.0",
   "devtools_page": "devtools.html",
+  "host_permissions": ["http://localhost:3847/*"],
   "content_scripts": [
     {
       "matches": [
         "https://*.design.webflow.com/*",
         "https://webflow.com/design/*"
       ],
-      "js": ["content-main.js"],
+      "js": ["content-main.js", "content-bridge.js"],
       "world": "MAIN",
       "run_at": "document_start"
+    },
+    {
+      "matches": [
+        "https://*.design.webflow.com/*",
+        "https://webflow.com/design/*"
+      ],
+      "js": ["content-isolated.js"],
+      "world": "ISOLATED",
+      "run_at": "document_idle"
     }
   ]
 }

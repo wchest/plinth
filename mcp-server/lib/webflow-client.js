@@ -174,6 +174,41 @@ class WebflowClient {
     return (data && data.pages) ? data.pages : [];
   }
 
+  async createPage({ title, slug, description, seoTitle, seoDescription, ogTitle, ogDescription, draft }) {
+    const body = {};
+    if (title) body.title = title;
+    if (slug) body.slug = slug;
+    if (description) body.description = description;
+    if (seoTitle) body.seo = { ...(body.seo || {}), title: seoTitle };
+    if (seoDescription) body.seo = { ...(body.seo || {}), description: seoDescription };
+    if (ogTitle) body.openGraph = { ...(body.openGraph || {}), title: ogTitle };
+    if (ogDescription) body.openGraph = { ...(body.openGraph || {}), description: ogDescription };
+    if (draft !== undefined) body.draft = draft;
+    // Note: Webflow Data API v2 does NOT have a create page endpoint.
+    // Page creation must use the Designer API (webflow.createPage) or internal dispatch.
+    // This method is kept for future API support but will currently fail.
+    return this._request('POST', `/sites/${this.siteId}/pages`, body);
+  }
+
+  async updatePage(pageId, { title, slug, description, seoTitle, seoDescription, ogTitle, ogDescription, draft }) {
+    const body = {};
+    if (title) body.title = title;
+    if (slug) body.slug = slug;
+    if (description) body.description = description;
+    if (seoTitle || seoDescription) {
+      body.seo = {};
+      if (seoTitle) body.seo.title = seoTitle;
+      if (seoDescription) body.seo.description = seoDescription;
+    }
+    if (ogTitle || ogDescription) {
+      body.openGraph = {};
+      if (ogTitle) body.openGraph.title = ogTitle;
+      if (ogDescription) body.openGraph.description = ogDescription;
+    }
+    if (draft !== undefined) body.draft = draft;
+    return this._request('PUT', `/pages/${pageId}`, body);
+  }
+
   async getPageDom(pageId) {
     const data = await this._request('GET', `/pages/${pageId}/dom`);
     return data;

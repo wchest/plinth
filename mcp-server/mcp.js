@@ -373,6 +373,105 @@ async function main() {
     }
   );
 
+  // ── create_page ──────────────────────────────────────────────────
+  server.tool(
+    'create_page',
+    'Create a new static page via the Designer bridge (UI simulation). ' +
+    'Returns the new page ID. Optionally sets SEO/OG metadata via save_page after creation. ' +
+    'Requires the Designer to be open with the bridge extension connected.',
+    {
+      siteId: z.string().describe('The Webflow site ID'),
+      name: z.string().describe('Page name (e.g. "About Us")'),
+      slug: z.string().optional().describe('URL slug — set after creation via save_page'),
+      seoTitle: z.string().optional().describe('SEO meta title'),
+      seoDescription: z.string().optional().describe('SEO meta description'),
+      ogTitle: z.string().optional().describe('Open Graph title'),
+      ogDescription: z.string().optional().describe('Open Graph description'),
+    },
+    async ({ siteId, name, slug, seoTitle, seoDescription, ogTitle, ogDescription }) => {
+      try {
+        // Step 1: Create the page via UI simulation
+        const createResult = await requestBridge(siteId, 'create_page', { name });
+        if (!createResult.created) {
+          return fail(`Page creation failed: ${createResult.error || 'unknown error'}`);
+        }
+
+        const pageId = createResult.pageId;
+        const result = { created: true, name, pageId };
+
+        // Step 2: If any metadata was provided, save it via save_page
+        if (pageId && (slug || seoTitle || seoDescription || ogTitle || ogDescription)) {
+          try {
+            const savePayload = { pageId };
+            if (slug) savePayload.slug = slug;
+            if (seoTitle) savePayload.seoTitle = seoTitle;
+            if (seoDescription) savePayload.seoDescription = seoDescription;
+            if (ogTitle) savePayload.ogTitle = ogTitle;
+            if (ogDescription) savePayload.ogDescription = ogDescription;
+            const saveResult = await requestBridge(siteId, 'save_page', savePayload);
+            result.metadataSaved = saveResult.saved || false;
+          } catch (e) {
+            result.metadataError = e.message;
+          }
+        }
+
+        return ok(result);
+      } catch (e) {
+        return fail(`Failed to create page: ${e.message}`);
+      }
+    }
+  );
+
+  // ── update_page ──────────────────────────────────────────────────
+  server.tool(
+    'update_page',
+    'Update a page\'s settings (name, slug, SEO, Open Graph) via the Designer bridge. ' +
+    'Uses savePage with the Immutable page record from the store.',
+    {
+      siteId: z.string().describe('The Webflow site ID'),
+      pageId: z.string().describe('The page ID to update'),
+      name: z.string().optional().describe('New page name'),
+      slug: z.string().optional().describe('New URL slug'),
+      seoTitle: z.string().optional().describe('SEO meta title'),
+      seoDescription: z.string().optional().describe('SEO meta description'),
+      ogTitle: z.string().optional().describe('Open Graph title'),
+      ogDescription: z.string().optional().describe('Open Graph description'),
+    },
+    async ({ siteId, pageId, name, slug, seoTitle, seoDescription, ogTitle, ogDescription }) => {
+      try {
+        const payload = { pageId };
+        if (name) payload.name = name;
+        if (slug) payload.slug = slug;
+        if (seoTitle) payload.seoTitle = seoTitle;
+        if (seoDescription) payload.seoDescription = seoDescription;
+        if (ogTitle) payload.ogTitle = ogTitle;
+        if (ogDescription) payload.ogDescription = ogDescription;
+        const result = await requestBridge(siteId, 'save_page', payload);
+        return ok(result);
+      } catch (e) {
+        return fail(`Failed to update page: ${e.message}`);
+      }
+    }
+  );
+
+  // ── switch_page ─────────────────────────────────────────────────
+  server.tool(
+    'switch_page',
+    'Switch the Designer to a different page. Required before building content on a non-current page.',
+    {
+      siteId: z.string().describe('The Webflow site ID'),
+      pageId: z.string().describe('The page ID to switch to'),
+    },
+    async ({ siteId, pageId }) => {
+      try {
+        const result = await requestBridge(siteId, 'switch_page', { pageId });
+        return ok(result);
+      } catch (e) {
+        return fail(`Failed to switch page: ${e.message}`);
+      }
+    }
+  );
+
   // ── Snapshot helper ───────────────────────────────────────────────
   // Signals the Designer Extension to capture the live page DOM,
   // then polls until the snapshot arrives (or times out).
@@ -875,6 +974,251 @@ async function main() {
           ? `Reordered ${result.moved} section(s). Errors: ${result.errors.join('; ')}`
           : `Reordered ${result.moved} section(s): ${sectionClasses.join(' → ')}`
       );
+    }
+  );
+
+  // ── Bridge helper ─────────────────────────────────────────────────
+  // Sends a command to the content script bridge via the relay and polls for the result.
+  async function requestBridge(siteId, type, payload, timeoutMs = 30_000) {
+    const relayUrl = registry.relayUrl;
+
+    let reqRes;
+    try {
+      reqRes = await fetch(
+        `${relayUrl}/bridge/request?siteId=${encodeURIComponent(siteId)}`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ type, payload: payload || {} }),
+        }
+      );
+    } catch (e) {
+      return { error: `Cannot reach relay at ${relayUrl}. Run 'plinth dev' first.` };
+    }
+    if (!reqRes.ok) return { error: `Relay returned ${reqRes.status} for bridge request.` };
+
+    const { id } = await reqRes.json();
+
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 1500));
+      try {
+        const resultRes = await fetch(
+          `${relayUrl}/bridge/result?siteId=${encodeURIComponent(siteId)}`
+        );
+        if (resultRes.ok) {
+          const data = await resultRes.json();
+          if (data.ready) return { result: data };
+        }
+      } catch { /* keep polling */ }
+    }
+
+    return {
+      error: `Bridge timed out after ${timeoutMs / 1000} s. Make sure the Plinth Inspector extension ` +
+             'is installed and the Webflow Designer is open.',
+    };
+  }
+
+  // ── bridge_snapshot ─────────────────────────────────────────────────
+  server.tool(
+    'bridge_snapshot',
+    'Get a structural snapshot of the current Webflow page via the content script bridge. ' +
+    'Returns an indented tree of all elements with their types, IDs, class names, and text content, ' +
+    'plus a list of all styles. No Designer Extension panel needed — only the Inspector Chrome extension. ' +
+    'Use this to verify builds, check page structure, and confirm element/style presence.',
+    {
+      siteId: z.string().describe('The Webflow site ID'),
+    },
+    async ({ siteId }) => {
+      const { result, error } = await requestBridge(siteId, 'snapshot');
+      if (error) return fail(error);
+      if (!result.ok) return fail(`Bridge snapshot failed: ${result.error}`);
+      const d = result.data;
+      const pageLabel = d.pageInfo?.name ? `Page: ${d.pageInfo.name}\n\n` : '';
+      return ok(`${pageLabel}${d.summary}`);
+    }
+  );
+
+  // ── bridge_ping ─────────────────────────────────────────────────────
+  server.tool(
+    'bridge_ping',
+    'Check if the content script bridge is connected and can reach _webflow.creators. ' +
+    'Returns { ready, creatorsAvailable, creatorsCount }. ' +
+    'Requires the Plinth Inspector Chrome extension to be installed and the Designer open.',
+    {
+      siteId: z.string().describe('The Webflow site ID'),
+    },
+    async ({ siteId }) => {
+      const { result, error } = await requestBridge(siteId, 'ping');
+      if (error) return fail(error);
+      if (!result.ok) return fail(`Bridge ping failed: ${result.error}`);
+      return ok(result.data);
+    }
+  );
+
+  // ── bridge_execute ──────────────────────────────────────────────────
+  server.tool(
+    'bridge_execute',
+    'Execute a _webflow.creators action via the content script bridge. ' +
+    'Calls _webflow.creators[namespace][method](...args) in the Designer page context. ' +
+    'Use bridge_ping first to verify connectivity. ' +
+    'Example: namespace="StyleActionCreators", method="setStyle", args=[{path:"backgroundColor",value:"red"}]',
+    {
+      siteId:    z.string().describe('The Webflow site ID'),
+      namespace: z.string().describe('Creator namespace (e.g. "StyleActionCreators")'),
+      method:    z.string().describe('Method name on the namespace (e.g. "setStyle")'),
+      args:      z.array(z.any()).optional().describe('Arguments to pass to the method. Default: []'),
+    },
+    async ({ siteId, namespace, method, args = [] }) => {
+      const { result, error } = await requestBridge(siteId, 'execute', { namespace, method, args });
+      if (error) return fail(error);
+      if (!result.ok) return fail(`Bridge execute failed: ${result.error}`);
+      return ok(result.data);
+    }
+  );
+
+  // ── bridge_build ────────────────────────────────────────────────────
+  server.tool(
+    'bridge_build',
+    'Build a section on the Webflow canvas via the content script bridge — no Designer Extension needed. ' +
+    'Takes a BuildPlan-like tree and creates elements via ELEMENT_ADDED dispatch + styles via importSiteData. ' +
+    'Requires the Plinth Inspector Chrome extension and the Designer page open. ' +
+    'Use bridge_ping first to verify connectivity and webpack capture.',
+    {
+      siteId: z.string().describe('The Webflow site ID'),
+      tree: z.record(z.any()).describe('Root element node (same format as BuildPlan tree)'),
+      styles: z.array(z.record(z.any())).optional().describe(
+        'Style definitions: [{ name, properties: { camelCase: value } }] or [{ name, styleLess: "..." }]'
+      ),
+      insertAfterSectionClass: z.string().optional().describe(
+        'CSS class of the section to insert after'
+      ),
+      insertAfterElementId: z.string().optional().describe(
+        'Element ID to insert after (from get_page_snapshot)'
+      ),
+      parentElementId: z.string().optional().describe(
+        'Element ID to insert inside as a child (append). Use for adding elements inside a CollectionItem or other container.'
+      ),
+    },
+    async ({ siteId, tree, styles, insertAfterSectionClass, insertAfterElementId, parentElementId }) => {
+      const payload = { tree };
+      if (styles) payload.styles = styles;
+      if (insertAfterSectionClass) payload.insertAfterSectionClass = insertAfterSectionClass;
+      if (insertAfterElementId) payload.insertAfterElementId = insertAfterElementId;
+      if (parentElementId) payload.parentElementId = parentElementId;
+
+      const { result, error } = await requestBridge(siteId, 'build', payload, 120_000);
+      if (error) return fail(error);
+      if (!result.ok) return fail(`Bridge build failed: ${result.error}`);
+
+      const d = result.data;
+      const parts = [`Created ${d.elementsCreated} element(s).`];
+      if (d.stylesApplied > 0) parts.push(`Styled ${d.stylesApplied} element(s).`);
+      if (d.errors && d.errors.length > 0) parts.push(`Errors: ${d.errors.join('; ')}`);
+
+      return ok(parts.join(' '));
+    }
+  );
+
+  // ── bridge_delete ───────────────────────────────────────────────────
+  server.tool(
+    'bridge_delete',
+    'Delete elements from the Webflow canvas via the content script bridge. ' +
+    'Takes an array of element IDs (from get_page_snapshot or bridge_build). ' +
+    'Elements are deleted one at a time via NODE_CLICKED + DELETE_KEY_PRESSED dispatch.',
+    {
+      siteId: z.string().describe('The Webflow site ID'),
+      elementIds: z.array(z.string()).describe('Array of element IDs to delete'),
+    },
+    async ({ siteId, elementIds }) => {
+      const { result, error } = await requestBridge(siteId, 'delete', { elementIds }, 120_000);
+      if (error) return fail(error);
+      if (!result.ok) return fail(`Bridge delete failed: ${result.error}`);
+
+      const d = result.data;
+      const parts = [`Deleted ${d.deleted} element(s).`];
+      if (d.errors && d.errors.length > 0) parts.push(`Errors: ${d.errors.join('; ')}`);
+      return ok(parts.join(' '));
+    }
+  );
+
+  // ── bridge_connect_collection ──────────────────────────────────────
+  server.tool(
+    'bridge_connect_collection',
+    'Connect a Collection List (DynamoWrapper) to a CMS collection. ' +
+    'Must be called BEFORE bridge_bind — field bindings require an active collection connection. ' +
+    'elementId is the DynamoWrapper UUID (from bridge_build or get_page_snapshot).',
+    {
+      siteId: z.string().describe('The Webflow site ID'),
+      elementId: z.string().describe('UUID of the DynamoWrapper element'),
+      collectionId: z.string().describe('CMS collection ID to connect'),
+    },
+    async ({ siteId, elementId, collectionId }) => {
+      const { result, error } = await requestBridge(siteId, 'connect_collection', { elementId, collectionId });
+      if (error) return fail(error);
+      if (!result.ok) return fail(`Bridge connect_collection failed: ${result.error}`);
+
+      const d = result.data;
+      return ok(`Connected DynamoWrapper ${d.elementId.substring(0, 8)} to collection ${d.collectionId}`);
+    }
+  );
+
+  // ── bridge_bind ────────────────────────────────────────────────────
+  server.tool(
+    'bridge_bind',
+    'Bind a CMS collection field to an element inside a Collection List (DynamoItem). ' +
+    'The Collection List must already be connected to a collection (use bridge_connect_collection first). ' +
+    'fieldSlug is the CMS field slug (e.g. "name", "quote", "slug"). ' +
+    'gateway defaults to "dynamoPlainTextToListOfElements" for plain text fields. ' +
+    'Use "dynamoImageToAttributes" for image fields, "dynamoLinkToAttributes" for link fields.',
+    {
+      siteId: z.string().describe('The Webflow site ID'),
+      elementId: z.string().describe('UUID of the element to bind the field to'),
+      fieldSlug: z.string().describe('CMS collection field slug (e.g. "name", "quote")'),
+      gateway: z.string().optional().describe('DynamoGateway function name (default: dynamoPlainTextToListOfElements)'),
+    },
+    async ({ siteId, elementId, fieldSlug, gateway }) => {
+      const payload = { elementId, fieldSlug };
+      if (gateway) payload.gateway = gateway;
+      const { result, error } = await requestBridge(siteId, 'bind', payload);
+      if (error) return fail(error);
+      if (!result.ok) return fail(`Bridge bind failed: ${result.error}`);
+      const d = result.data;
+      if (!d.bound) return fail(d.error || 'Bind returned false');
+      return ok(`Bound field "${d.fieldSlug}" to element ${d.elementId.substring(0, 8)} via ${d.gateway}`);
+    }
+  );
+
+  // ── bridge_paste ──────────────────────────────────────────────────
+  server.tool(
+    'bridge_paste',
+    'Paste a @webflow/XscpData payload into the Webflow Designer via synthetic paste event. ' +
+    'Fully automated — no manual Ctrl+V needed. Works for all element types including ' +
+    'complex/factory elements (Navbar, Slider, Tabs, etc.) that crash with ELEMENT_ADDED. ' +
+    'The xscpData must have type "@webflow/XscpData" with payload.nodes and payload.styles arrays.',
+    {
+      siteId: z.string().describe('The Webflow site ID'),
+      xscpData: z.record(z.any()).describe(
+        'Complete @webflow/XscpData object: { type: "@webflow/XscpData", payload: { nodes: [...], styles: [...], assets: [], ix1: [], ix2: {...} }, meta: {...} }'
+      ),
+      targetElementId: z.string().describe(
+        'Element ID to select before pasting — paste inserts as child of this element. Use body ID to paste at page level.'
+      ),
+    },
+    async ({ siteId, xscpData, targetElementId }) => {
+      if (xscpData.type !== '@webflow/XscpData') {
+        return fail('xscpData.type must be "@webflow/XscpData"');
+      }
+      if (!xscpData.payload?.nodes || !Array.isArray(xscpData.payload.nodes)) {
+        return fail('xscpData.payload.nodes must be an array');
+      }
+      const payload = { xscpData, targetElementId };
+      const { result, error } = await requestBridge(siteId, 'paste', payload);
+      if (error) return fail(error);
+      if (!result.ok) return fail(`Bridge paste failed: ${result.error}`);
+      const d = result.data;
+      if (!d.pasted) return fail(d.error || 'Paste returned false');
+      return ok(`Pasted ${d.nodeCount} nodes (target: ${d.targetElementId.substring(0, 8)}…)`);
     }
   );
 

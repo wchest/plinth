@@ -39,6 +39,7 @@ const logRouter      = require('./routes/log');
 const updatesRouter  = require('./routes/updates');
 const insertRouter   = require('./routes/insert');
 const moveRouter     = require('./routes/move');
+const bridgeRouter   = require('./routes/bridge');
 
 // --- Config path resolution -------------------------------------------
 //
@@ -96,7 +97,8 @@ app.use((req, res, next) => {
       path === '/delete/pending' ||
       path === '/updates/pending' ||
       path === '/insert/pending' ||
-      path === '/move/pending'
+      path === '/move/pending' ||
+      path === '/bridge/pending'
     )) return;
     if (res.statusCode === 200 && method === 'POST' && path.startsWith('/log/')) return;
     const ms = Date.now() - start;
@@ -121,6 +123,7 @@ app.use('/log',      logRouter);
 app.use('/updates',  updatesRouter);
 app.use('/insert',   insertRouter);
 app.use('/move',     moveRouter);
+app.use('/bridge',   bridgeRouter);
 
 // --- 404 handler ------------------------------------------------------
 
