@@ -201,7 +201,13 @@ Use **embedded static text** when:
 
 ### Webflow Variables
 
-Variables are CSS custom properties scoped to the site. Use them for design tokens — brand colors, spacing scales, font sizes — that appear across many styles. If the project has variables defined, reference them in style property values using `var(--variable-name)`. Don't try to define variables in a BuildPlan; create them in Designer first, then reference them by their binding string.
+Variables are CSS custom properties scoped to the site. Use them for design tokens — brand colors, spacing scales, font sizes — that appear across many styles.
+
+- **v2 (`bridge_build_v2`)**: Reference variables with `$variable-name` in `styles` strings. The bridge resolves them automatically to `@var_variable-UUID`. Use `bridge_list_variables` to discover available variable names.
+- **v1 (BuildPlan)**: Variables cannot be referenced directly. Use literal values instead, or reference the compiled `@var_variable-UUID` string if you know it.
+- **XscpData clipboard**: Use `@var_variable-UUID` syntax directly in `styleLess` strings.
+
+Don't try to define variables in a BuildPlan; create them in Designer first, then reference them.
 
 ### CMS Bindings
 
@@ -331,6 +337,115 @@ function div(classIds, childIds) {
 | CMS Collection List with field bindings | Clipboard (BuildPlan can create the structure but not bind fields) |
 | Needs to run unattended / queued | BuildPlan |
 | One-off paste, user is at the Designer | Clipboard |
+
+---
+
+## V2 Build Pipeline — `bridge_build_v2` (Preferred)
+
+The v2 pipeline creates sections via XscpData paste — ~50ms total vs ~600ms/element in v1. Use this for all new builds when the bridge is connected.
+
+### SectionSpec Format
+
+```json
+{
+  "tree": {
+    "type": "Section",
+    "className": "hero-section",
+    "styles": "position: relative; display: flex; min-height: 100vh; background-color: $brand-cream;",
+    "children": [
+      {
+        "type": "DivBlock",
+        "className": "hero-container",
+        "styles": "max-width: 1200px; margin-left: auto; margin-right: auto; padding: 32px;",
+        "children": [
+          {
+            "type": "Heading",
+            "className": "hero-h1",
+            "headingLevel": 1,
+            "text": "Welcome",
+            "styles": "font-size: 56px; color: $brand-green; font-family: @raw<|Instrument Serif, Georgia, serif|>;"
+          },
+          {
+            "type": "Paragraph",
+            "className": "hero-desc",
+            "text": "A place of belonging.",
+            "styles": "font-size: 18px; color: #6B6560; line-height: 1.7;"
+          }
+        ]
+      }
+    ]
+  },
+  "sharedStyles": [
+    { "name": "Utility Bold", "styles": "font-weight: 700;" }
+  ],
+  "insertAfterSectionClass": "nav-section"
+}
+```
+
+### Key Differences from v1 BuildPlan
+
+| Feature | v1 BuildPlan | v2 SectionSpec |
+|---------|-------------|----------------|
+| CSS format | Separate `styles[]` with `properties` objects, longhand only | Inline `styles` string on each node, shorthand OK |
+| Variable references | Not supported | `$var-name` → auto-resolved to `@var_variable-UUID` |
+| Special values | Not supported | `@raw<\|value\|>` for font families, complex values |
+| Style reuse | Manual (check + skip) | Automatic by name (existing styles reused by `_id`) |
+| Speed | ~600ms/element (ELEMENT_ADDED + setStyle) | ~50ms total (single XscpData paste) |
+| Execution | Requires Designer Extension | Requires Inspector content script (bridge) |
+
+### SectionSpec Element Fields
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `type` | Yes | Element type (same as v1: Section, DivBlock, Heading, etc.) |
+| `className` | Yes | Style name (kebab-case). Reuses existing style if name matches. |
+| `styles` | No | CSS string. Shorthand allowed. Variable refs via `$name`. |
+| `text` | For text elements | Text content |
+| `headingLevel` | For Heading | Integer 1–6 |
+| `href` | For Button/Link | URL string |
+| `src`, `alt` | For Image | Image source and alt text |
+| `code` | For CodeEmbed | HTML embed code |
+| `children` | No | Array of child SectionSpec nodes |
+| `classes` | No | Additional class names (for combo classes) |
+
+### Variable Resolution
+
+Variables defined in Webflow Designer are resolved automatically:
+- `$brand-green` in a `styles` string → `@var_variable-67eec1ed-...`
+- Use `bridge_list_variables` to see available variables and their names
+- Unresolved `$references` are left as-is (won't crash, just won't render)
+
+### Insertion Positioning
+
+- **No position fields**: paste appends as last child of page body
+- **`insertAfterSectionClass`**: paste appends, then ELEMENT_MOVED reorders after target
+- **`insertAfterElementId`**: same as above, by element ID
+- **`parentElementId`**: paste inside a specific container element
+
+### Supported Element Types
+
+All simple types from v1 are supported: Section, DivBlock, Container, Heading, Paragraph, TextBlock, BlockQuote, CodeBlock, Button, Link, TextLink, Image, HFlex, VFlex, Grid, List, ListItem, CodeEmbed, RichText.
+
+Factory elements (Navbar, Slider, Tabs, etc.) should use `bridge_capture_xscp` to capture a template, then replay with `bridge_paste`.
+
+### V2 Build Loop
+
+Same workflow as v1, but using v2 tools:
+
+1. **Orient**: `bridge_snapshot` to see canvas, `bridge_list_variables` for available tokens
+2. **Build**: `bridge_build_v2(siteId, tree, ...)` — returns immediately with node/style counts
+3. **Verify**: `bridge_snapshot` + `take_screenshot(siteId, sectionClass="...")` — mandatory, no skipping
+4. **Next section**: set `insertAfterSectionClass` to the just-built section's class
+
+### When to Use V1 vs V2
+
+| Situation | Use |
+|-----------|-----|
+| Bridge connected, simple/medium sections | **v2** (`bridge_build_v2`) — fast, shorthand CSS |
+| Bridge not connected, extension available | v1 (`queue_buildplan`) |
+| Factory elements (Navbar, Tabs, Slider) | `bridge_capture_xscp` + `bridge_paste` |
+| CMS Collection Lists | v1 `bridge_build` (creates DynamoWrapper via factory) then `bridge_connect_collection` + `bridge_bind` |
+| Content/style patches on existing sections | `update_styles`, `update_content` (unchanged) |
 
 ---
 
@@ -517,7 +632,8 @@ Exactly one of `parentClass` or `afterClass` must be provided:
 | Add new elements | `insert_elements` |
 | Remove specific elements | `delete_elements` |
 | Change nesting / restructure | `replacesSectionClass` in BuildPlan |
-| First time building a section | `queue_buildplan` (no `replacesSectionClass`) |
+| First time building a section (bridge connected) | `bridge_build_v2` |
+| First time building a section (extension only) | `queue_buildplan` |
 
 After any edit, call `get_page_snapshot` to verify the changes took effect.
 

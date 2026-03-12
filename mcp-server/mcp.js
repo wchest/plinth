@@ -425,7 +425,7 @@ async function main() {
   // ── update_page ──────────────────────────────────────────────────
   server.tool(
     'update_page',
-    'Update a page\'s settings (name, slug, SEO, Open Graph) via the Designer bridge. ' +
+    'Update a page\'s settings (name, slug, SEO, Open Graph, custom code) via the Designer bridge. ' +
     'Uses savePage with the Immutable page record from the store.',
     {
       siteId: z.string().describe('The Webflow site ID'),
@@ -436,8 +436,10 @@ async function main() {
       seoDescription: z.string().optional().describe('SEO meta description'),
       ogTitle: z.string().optional().describe('Open Graph title'),
       ogDescription: z.string().optional().describe('Open Graph description'),
+      head: z.string().optional().describe('Custom code in <head> tag (HTML/CSS/JS)'),
+      postBody: z.string().optional().describe('Custom code before </body> tag (HTML/JS)'),
     },
-    async ({ siteId, pageId, name, slug, seoTitle, seoDescription, ogTitle, ogDescription }) => {
+    async ({ siteId, pageId, name, slug, seoTitle, seoDescription, ogTitle, ogDescription, head, postBody }) => {
       try {
         const payload = { pageId };
         if (name) payload.name = name;
@@ -446,6 +448,8 @@ async function main() {
         if (seoDescription) payload.seoDescription = seoDescription;
         if (ogTitle) payload.ogTitle = ogTitle;
         if (ogDescription) payload.ogDescription = ogDescription;
+        if (head) payload.head = head;
+        if (postBody) payload.postBody = postBody;
         const result = await requestBridge(siteId, 'save_page', payload);
         return ok(result);
       } catch (e) {
@@ -1077,6 +1081,29 @@ async function main() {
     }
   );
 
+  // ── bridge_probe ─────────────────────────────────────────────────────
+  server.tool(
+    'bridge_probe',
+    'Evaluate a JavaScript expression in the Designer page context with access to _webflow. ' +
+    'Use for debugging and inspecting internal state (e.g. _webflow.state.CssVariablesStore, ' +
+    '_webflow.state.DesignerStore, element data). The expression receives _webflow as a variable. ' +
+    'Return values are serialized (Immutable objects are converted via .toJS()).',
+    {
+      siteId: z.string().describe('The Webflow site ID'),
+      expr: z.string().describe(
+        'JavaScript expression to evaluate. Has access to _webflow. ' +
+        'Example: "_webflow.state.PageStore.currentPage" or ' +
+        '"Object.keys(_webflow.state).filter(k => k.indexOf(\"Variable\") >= 0)"'
+      ),
+    },
+    async ({ siteId, expr }) => {
+      const { result, error } = await requestBridge(siteId, 'probe', { expr });
+      if (error) return fail(error);
+      if (!result.ok) return fail(`Bridge probe failed: ${result.error}`);
+      return ok(result.data);
+    }
+  );
+
   // ── bridge_build ────────────────────────────────────────────────────
   server.tool(
     'bridge_build',
@@ -1219,6 +1246,173 @@ async function main() {
       const d = result.data;
       if (!d.pasted) return fail(d.error || 'Paste returned false');
       return ok(`Pasted ${d.nodeCount} nodes (target: ${d.targetElementId.substring(0, 8)}…)`);
+    }
+  );
+
+  // ── bridge_build_v2 ──────────────────────────────────────────────
+  server.tool(
+    'bridge_build_v2',
+    'Build a section on the Webflow canvas via XscpData paste — the fast v2 pipeline. ' +
+    'Takes a SectionSpec tree where each node has inline CSS in a `styles` string. ' +
+    'Variable references ($var-name) are resolved to Webflow variable UUIDs automatically. ' +
+    'Existing styles are reused by name (no duplicates). Shorthand CSS is allowed. ' +
+    'Returns node/style counts. Use bridge_snapshot + take_screenshot to verify.',
+    {
+      siteId: z.string().describe('The Webflow site ID'),
+      tree: z.record(z.any()).describe(
+        'Root element: { type, className, styles: "CSS string", text?, headingLevel?, href?, src?, alt?, children?: [...] }'
+      ),
+      sharedStyles: z.array(z.record(z.any())).optional().describe(
+        'Styles not attached to elements in this section: [{ name, styles: "CSS string" }]'
+      ),
+      insertAfterSectionClass: z.string().optional().describe(
+        'CSS class of the section to insert after (section is reordered post-paste)'
+      ),
+      insertAfterElementId: z.string().optional().describe(
+        'Element ID to insert after (from get_page_snapshot)'
+      ),
+      parentElementId: z.string().optional().describe(
+        'Element ID to paste inside as a child'
+      ),
+      ix2: z.record(z.any()).optional().describe(
+        'IX2 interaction data to merge into the XscpData (from captured templates)'
+      ),
+    },
+    async ({ siteId, tree, sharedStyles, insertAfterSectionClass, insertAfterElementId, parentElementId, ix2 }) => {
+      const payload = { tree };
+      if (sharedStyles) payload.sharedStyles = sharedStyles;
+      if (insertAfterSectionClass) payload.insertAfterSectionClass = insertAfterSectionClass;
+      if (insertAfterElementId) payload.insertAfterElementId = insertAfterElementId;
+      if (parentElementId) payload.parentElementId = parentElementId;
+      if (ix2) payload.ix2 = ix2;
+
+      const { result, error } = await requestBridge(siteId, 'build_v2', payload, 30_000);
+      if (error) return fail(error);
+      if (!result.ok) return fail(`Bridge build_v2 failed: ${result.error}`);
+
+      const d = result.data;
+      const parts = [`Pasted ${d.nodeCount} nodes, ${d.styleCount} styles.`];
+      if (d.reordered) parts.push('Reordered to requested position.');
+      if (d.rootId) parts.push(`Root: ${d.rootId.substring(0, 8)}…`);
+
+      return ok(parts.join(' '));
+    }
+  );
+
+  // ── bridge_list_variables ──────────────────────────────────────────
+  server.tool(
+    'bridge_list_variables',
+    'List all style variables defined in the Webflow site. ' +
+    'Returns variable names, IDs, values, and types. ' +
+    'Use variable names with $name syntax in bridge_build_v2 styles for automatic resolution.',
+    {
+      siteId: z.string().describe('The Webflow site ID'),
+    },
+    async ({ siteId }) => {
+      const { result, error } = await requestBridge(siteId, 'list_variables', {});
+      if (error) return fail(error);
+      if (!result.ok) return fail(`Bridge list_variables failed: ${result.error}`);
+
+      const d = result.data;
+      if (d.error) {
+        return ok(`Found ${d.count || 0} variables (with warning: ${d.error}):\n${JSON.stringify(d.variables, null, 2)}`);
+      }
+      return ok(`Found ${d.count} variables:\n${JSON.stringify(d.variables, null, 2)}`);
+    }
+  );
+
+  // ── bridge_create_variables ──────────────────────────────────────────
+  server.tool(
+    'bridge_create_variables',
+    'Create style variables in the Webflow Designer. ' +
+    'Variables are persisted to the server and immediately available for use ' +
+    'with $name syntax in bridge_build_v2 styles. ' +
+    'Supported types: color, length (size), font-family, number, percentage.',
+    {
+      siteId: z.string().describe('The Webflow site ID'),
+      variables: z.array(z.object({
+        name: z.string().describe('Variable name (e.g. "Brand Blue")'),
+        type: z.enum(['color', 'length', 'font-family', 'number', 'percentage']).default('color')
+          .describe('Variable type'),
+        value: z.any().describe('Variable value. Color: "#FF0000" or "hsla(...)". Length: {value: 16, unit: "px"}. Font-family: "Inter". Number/percentage: 1.5'),
+      })).describe('Array of variables to create'),
+      collectionId: z.string().optional()
+        .describe('Variable collection ID. Omit to use the first non-default collection.'),
+    },
+    async ({ siteId, variables, collectionId }) => {
+      const payload = { variables };
+      if (collectionId) payload.collectionId = collectionId;
+
+      const { result, error } = await requestBridge(siteId, 'create_variables', payload);
+      if (error) return fail(error);
+      if (!result.ok) return fail(`Bridge create_variables failed: ${result.error}`);
+
+      const d = result.data;
+      if (d.error) return fail(d.error);
+
+      let msg = `Created ${d.count} variable(s) in collection ${d.collectionId}:\n`;
+      msg += JSON.stringify(d.created, null, 2);
+      if (d.errors) msg += `\nErrors:\n${JSON.stringify(d.errors, null, 2)}`;
+      return ok(msg);
+    }
+  );
+
+  // ── bridge_capture_xscp ────────────────────────────────────────────
+  server.tool(
+    'bridge_capture_xscp',
+    'Capture the XscpData (copy payload) for an element on the Webflow canvas. ' +
+    'Selects the element, triggers copy, and returns the complete XscpData JSON ' +
+    'including nodes, styles, and ix2 interactions. ' +
+    'Use this to capture templates for replay with bridge_build_v2 or bridge_paste.',
+    {
+      siteId: z.string().describe('The Webflow site ID'),
+      elementId: z.string().describe('UUID of the element to capture'),
+    },
+    async ({ siteId, elementId }) => {
+      const { result, error } = await requestBridge(siteId, 'capture_xscp', { elementId }, 15_000);
+      if (error) return fail(error);
+      if (!result.ok) return fail(`Bridge capture_xscp failed: ${result.error}`);
+
+      const d = result.data;
+      if (!d.captured) return fail(d.error || 'Capture returned false');
+
+      return ok({
+        captured: true,
+        elementId: d.elementId,
+        nodeCount: d.nodeCount,
+        styleCount: d.styleCount,
+        xscpData: d.xscpData
+      });
+    }
+  );
+
+  // ── bridge_update_styles ──────────────────────────────────────────
+  server.tool(
+    'bridge_update_styles',
+    'Update CSS properties on existing Webflow styles via the content script bridge. ' +
+    'Uses the v1 setStyle pipeline (NODE_CLICKED → startSetStyle → setStyle → endSetStyle). ' +
+    'Does NOT require the Designer Extension panel — only the Inspector Chrome extension. ' +
+    'Each entry needs a style "name" (must already exist) and "properties" (longhand CSS key-value pairs). ' +
+    'Example properties: { "background-color": "transparent", "font-size": "60px", "color": "#2C2C2C" }',
+    {
+      siteId: z.string().describe('The Webflow site ID'),
+      styles: z.array(z.object({
+        name: z.string().describe('Style/class name (must already exist in Webflow)'),
+        properties: z.record(z.string()).describe('CSS properties to set (longhand only, e.g. "background-color": "transparent")'),
+      })).describe('Array of styles to update'),
+    },
+    async ({ siteId, styles }) => {
+      const timeout = 10_000 + styles.length * 2_000; // ~2s per style entry
+      const { result, error } = await requestBridge(siteId, 'update_styles', { styles }, timeout);
+      if (error) return fail(error);
+      if (!result.ok) return fail(`Bridge update_styles failed: ${result.error}`);
+
+      const d = result.data;
+      return ok({
+        updated: d.updated,
+        failed: d.failed,
+        results: d.results
+      });
     }
   );
 

@@ -1104,7 +1104,7 @@
           else if (tag === 'a') label = 'Link';
           else if (label === 'DOM') label = 'Div'; // Builtin,DOM with non-special tag
         }
-        if (data.val.text && data.val.text.val === true) label = 'TextBlock';
+        if (data.val.text && data.val.text.val === true && !label.match(/^H[1-6]$/) && label !== 'Button') label = 'TextBlock';
       }
 
       var indent = '';
@@ -1533,6 +1533,8 @@
       seoDescription: 'seoDesc',
       ogTitle: 'ogTitle',
       ogDescription: 'ogDesc',
+      head: 'head',
+      postBody: 'postBody',
     };
     var keys = Object.keys(keyMap);
     for (var i = 0; i < keys.length; i++) {
@@ -1673,6 +1675,783 @@
     };
   }
 
+  // -- Build V2: SectionSpec → XscpData paste ---------------------------------
+
+  // Element type → XscpData node mapping
+  var XSCP_TYPE_MAP = {
+    Section:    { tag: 'section', type: 'Section' },
+    DivBlock:   { tag: 'div',     type: 'Block' },
+    Container:  { tag: 'div',     type: 'Block' },
+    Heading:    { tag: null,      type: 'Heading' },  // tag set from headingLevel
+    Paragraph:  { tag: 'p',       type: 'Paragraph' },
+    TextBlock:  { tag: 'div',     type: 'Block' },
+    BlockQuote: { tag: 'blockquote', type: 'Blockquote' },
+    CodeBlock:  { tag: 'pre',     type: 'CodeBlock' },
+    Button:     { tag: 'a',       type: 'Link' },
+    Link:       { tag: 'a',       type: 'Link' },
+    TextLink:   { tag: 'a',       type: 'Link' },
+    Image:      { tag: 'img',     type: 'Image' },
+    HFlex:      { tag: 'div',     type: 'Block' },
+    VFlex:      { tag: 'div',     type: 'Block' },
+    Grid:       { tag: 'div',     type: 'Block' },
+    List:       { tag: 'ul',      type: 'List' },
+    ListItem:   { tag: 'li',      type: 'ListItem' },
+    CodeEmbed:  { tag: 'div',     type: 'HtmlEmbed' },
+    RichText:   { tag: 'div',     type: 'RichText' },
+  };
+
+  // Resolve $variable-name references in a CSS string to @var_variable-UUID.
+  // Reads style variables from _webflow.state to build the lookup map.
+  function resolveVariableRefs(cssStr) {
+    if (!cssStr || cssStr.indexOf('$') === -1) return cssStr;
+
+    // Build name→UUID map from state (cached per build)
+    if (!resolveVariableRefs._cache) {
+      var map = {};
+      try {
+        var state = window._webflow.getState();
+        var cvs = state.CssVariablesStore;
+        if (cvs && cvs.variables) {
+          var vars = cvs.variables;
+          // Handle both Immutable and plain objects
+          var plain = (typeof vars.toJS === 'function') ? vars.toJS() : vars;
+          var varKeys = Object.keys(plain);
+          for (var vi = 0; vi < varKeys.length; vi++) {
+            var v = plain[varKeys[vi]];
+            if (v && v.name && v.id && !v.deleted) {
+              map[v.name] = v.id;
+            }
+          }
+        }
+      } catch (e) { /* ignore — variables just won't resolve */ }
+      resolveVariableRefs._cache = map;
+    }
+
+    var varMap = resolveVariableRefs._cache;
+    // Match $name (single word) or ${Name With Spaces} (multi-word)
+    return cssStr.replace(/\$\{([^}]+)\}|\$([a-zA-Z0-9_-]+)/g, function (match, bracedName, simpleName) {
+      var name = bracedName || simpleName;
+      var id = varMap[name];
+      if (id) return '@var_' + id;  // id is already "variable-UUID"
+      return match; // leave unresolved
+    });
+  }
+
+  // Look up existing style block names → _id map from state
+  function getExistingStyleMap() {
+    var map = {}; // name → _id
+    try {
+      var sb = window._webflow.state.StyleBlockStore.styleBlocks;
+      sb.forEach(function (v, k) {
+        var name = v.get('name');
+        if (name) map[name] = k;
+      });
+    } catch (e) { /* ignore */ }
+    return map;
+  }
+
+  // Convert a SectionSpec tree to XscpData { nodes[], styles[] }
+  function treeToXscpData(tree, sharedStyles, existingStyles) {
+    var nodes = [];
+    var styles = []; // { _id, name, styleLess, ... }
+    var styleIdMap = {}; // className → style _id (for reuse)
+
+    // Register a style. If the style already exists in Webflow, just reference its _id
+    // (don't emit — paste creates duplicates with " 2" suffix even with matching _id).
+    // Track styles that need post-paste updates in stylesToUpdate[].
+    var stylesToUpdate = []; // { name, cssStr } — existing styles needing property updates
+    function ensureStyle(className, cssStr) {
+      if (!className) return [];
+      if (styleIdMap[className]) return [styleIdMap[className]];
+
+      var existingId = existingStyles[className];
+      if (existingId) {
+        // Style already exists — reference it, queue for post-paste update
+        styleIdMap[className] = existingId;
+        if (cssStr) stylesToUpdate.push({ name: className, cssStr: cssStr });
+        return [existingId];
+      }
+
+      // New style — generate ID and emit
+      var styleId = crypto.randomUUID();
+      styleIdMap[className] = styleId;
+
+      var resolved = resolveVariableRefs(cssStr || '');
+
+      styles.push({
+        _id: styleId,
+        fake: false,
+        type: 'class',
+        name: className,
+        namespace: '',
+        comb: '',
+        styleLess: resolved || '',
+        variants: {},
+        children: [],
+        selector: null
+      });
+
+      return [styleId];
+    }
+
+    // Recursively convert a spec node to flat XscpData nodes
+    function convertNode(spec) {
+      var configKey = TYPE_ALIASES[spec.type] || spec.type;
+      var xscpInfo = XSCP_TYPE_MAP[configKey];
+      if (!xscpInfo) throw new Error('Unknown element type for v2: ' + spec.type);
+
+      var nodeId = crypto.randomUUID();
+      var classIds = ensureStyle(spec.className, spec.styles);
+
+      // Also add any extra classes (combo classes)
+      if (spec.classes && Array.isArray(spec.classes)) {
+        for (var ci = 0; ci < spec.classes.length; ci++) {
+          var extraIds = ensureStyle(spec.classes[ci], '');
+          classIds = classIds.concat(extraIds);
+        }
+      }
+
+      // Determine tag
+      var tag = xscpInfo.tag;
+      if (configKey === 'Heading') {
+        var level = spec.headingLevel || 2;
+        tag = 'h' + level;
+      } else if (configKey === 'List' && spec.ordered) {
+        tag = 'ol';
+      }
+
+      // Build data object
+      var data = { tag: tag };
+
+      // Text flag
+      if (spec.text || configKey === 'Heading' || configKey === 'Paragraph' ||
+          configKey === 'TextBlock' || configKey === 'BlockQuote' || configKey === 'Button' ||
+          configKey === 'TextLink' || configKey === 'CodeBlock') {
+        data.text = true;
+      } else {
+        data.text = false;
+      }
+
+      // Section grid data
+      if (configKey === 'Section') {
+        data.tag = 'section';
+        data.grid = { type: 'section' };
+      }
+
+      // Link/Button data
+      if (configKey === 'Button') {
+        data.button = true;
+        data.link = { url: spec.href || '#', target: '' };
+      } else if (configKey === 'Link' || configKey === 'TextLink') {
+        data.link = { url: spec.href || '#', target: spec.target || '' };
+      }
+
+      // Image data
+      if (configKey === 'Image') {
+        data.attr = { src: spec.src || '', alt: spec.alt || '' };
+        data.img = { id: '' };
+      }
+
+      // Code embed
+      if (configKey === 'CodeEmbed') {
+        data.embed = { type: 'custom', meta: { html: spec.code || spec.text || '' } };
+      }
+
+      // HFlex / VFlex / Grid — set display style inline if not in styles string
+      if (configKey === 'HFlex') {
+        data.xattr = [{ name: 'data-w-layout', value: 'hflex' }];
+      } else if (configKey === 'VFlex') {
+        data.xattr = [{ name: 'data-w-layout', value: 'vflex' }];
+      }
+
+      // Children
+      var childIds = [];
+
+      // Text content → text child node
+      if (spec.text && data.text) {
+        var textId = crypto.randomUUID();
+        childIds.push(textId);
+        nodes.push({ _id: textId, text: true, v: spec.text });
+      }
+
+      // Recurse children
+      if (spec.children && spec.children.length > 0) {
+        for (var i = 0; i < spec.children.length; i++) {
+          var childId = convertNode(spec.children[i]);
+          childIds.push(childId);
+        }
+      }
+
+      // Build node
+      var node = {
+        _id: nodeId,
+        tag: tag,
+        classes: classIds,
+        children: childIds,
+        type: xscpInfo.type,
+        data: data
+      };
+
+      nodes.push(node);
+      return nodeId;
+    }
+
+    // Convert main tree
+    var rootId = convertNode(tree);
+
+    // Add shared styles (not attached to any element in this section)
+    if (sharedStyles && sharedStyles.length > 0) {
+      for (var si = 0; si < sharedStyles.length; si++) {
+        var ss = sharedStyles[si];
+        ensureStyle(ss.name, ss.styles || '');
+      }
+    }
+
+    return { nodes: nodes, styles: styles, rootId: rootId, stylesToUpdate: stylesToUpdate };
+  }
+
+  // Placeholder — __DEPRECATED__STYLE_BLOCK_STATE_CHANGED crashes when updating styleLess.
+  // Existing styles are referenced by _id but their CSS properties are NOT updated.
+  // To update existing style properties, use the v1 setStyle pipeline or update_styles tool.
+  function updateExistingStyles(stylesToUpdate) {
+    if (stylesToUpdate && stylesToUpdate.length > 0) {
+      console.log('[plinth-bridge] ' + stylesToUpdate.length + ' existing styles skipped (use update_styles to fix)');
+    }
+    return Promise.resolve(0);
+  }
+
+  function handleBuildV2(payload) {
+    var tree = payload.tree;
+    if (!tree) throw new Error('payload.tree is required');
+
+    // Clear variable resolution cache for this build
+    resolveVariableRefs._cache = null;
+
+    // Get existing styles for reuse
+    var existingStyles = getExistingStyleMap();
+
+    // Convert to XscpData
+    var xscpResult = treeToXscpData(tree, payload.sharedStyles, existingStyles);
+
+    // Wrap in XscpData envelope
+    var xscpData = {
+      type: '@webflow/XscpData',
+      payload: {
+        nodes: xscpResult.nodes,
+        styles: xscpResult.styles,
+        assets: [],
+        ix1: [],
+        ix2: { interactions: [], events: [], actionLists: [] }
+      },
+      meta: {
+        unlinkedSymbolCount: 0,
+        droppedLinks: 0,
+        dynBindRemovedCount: 0,
+        dynListBindRemovedCount: 0,
+        paginationRemovedCount: 0
+      }
+    };
+
+    // Merge ix2 data if provided
+    if (payload.ix2) {
+      xscpData.payload.ix2 = payload.ix2;
+    }
+
+    // Find insertion target
+    var dsState = window._webflow.state.DesignerStore;
+    if (!dsState) throw new Error('DesignerStore not found');
+    var pageComp = null;
+    dsState.components.forEach(function (v, k) {
+      var ks = String(k);
+      if (ks.indexOf('SitePlugin') >= 0 && ks.indexOf('page') >= 0) pageComp = v;
+    });
+    if (!pageComp) throw new Error('Page component not found');
+    var bodyEl = pageComp.render && pageComp.render.val;
+    var bodyId = bodyEl && bodyEl.id;
+    if (!bodyId) throw new Error('Body element not found');
+
+    var targetElementId = bodyId;
+
+    if (payload.parentElementId) {
+      targetElementId = payload.parentElementId;
+    } else if (payload.insertAfterSectionClass) {
+      // For insertAfter, we select the section — paste inserts as child of selected.
+      // But we want to insert AFTER it, not inside it.
+      // Strategy: select the parent (body) and let paste append, then reorder if needed.
+      // Actually, Webflow paste inserts as child of selection.
+      // To insert after a section, we select the body and paste — it appends at end.
+      // Then we note we may need to reorder.
+      // For now, just select body and note the target for potential reorder.
+      targetElementId = bodyId;
+    } else if (payload.insertAfterElementId) {
+      targetElementId = bodyId;
+    }
+
+    // Select target and paste
+    window._webflow.dispatch({
+      type: 'NODE_CLICKED',
+      payload: {
+        nativeIdPath: [targetElementId],
+        isMultiSelectModifierKeyActive: false,
+        nativeIdInCurrentComponent: targetElementId
+      }
+    });
+
+    var xscpString = JSON.stringify(xscpData);
+
+    // Small delay to let NODE_CLICKED settle before paste
+    return new Promise(function (resolve) {
+      setTimeout(function () {
+        // Synthetic paste event
+        var fakeEvent = new Event('paste', { bubbles: true, cancelable: true });
+        Object.defineProperty(fakeEvent, 'clipboardData', {
+          value: {
+            getData: function (type) {
+              if (type === 'application/json') return xscpString;
+              if (type === 'text/plain') return xscpString;
+              return '';
+            },
+            types: ['application/json', 'text/plain'],
+            items: [],
+            files: []
+          }
+        });
+        document.body.dispatchEvent(fakeEvent);
+
+        var nodeCount = xscpData.payload.nodes.length;
+        var styleCount = xscpData.payload.styles.length;
+        console.log('[plinth-bridge] build_v2 paste: ' + nodeCount + ' nodes, ' + styleCount + ' styles');
+
+        // If we need to reorder (insertAfterSectionClass), do it after paste settles
+        if (payload.insertAfterSectionClass || payload.insertAfterElementId) {
+          setTimeout(function () {
+            // After paste, find the newly pasted section (root node) and reorder
+            // The pasted section should be the last child of body now
+            var afterClass = payload.insertAfterSectionClass;
+            var afterId = payload.insertAfterElementId;
+
+            // Re-read state after paste
+            var freshState = window._webflow.state.DesignerStore;
+            var freshPage = null;
+            freshState.components.forEach(function (v, k) {
+              var ks = String(k);
+              if (ks.indexOf('SitePlugin') >= 0 && ks.indexOf('page') >= 0) freshPage = v;
+            });
+
+            if (freshPage) {
+              var freshBody = freshPage.render && freshPage.render.val;
+              if (freshBody && freshBody.data && freshBody.data.val &&
+                  freshBody.data.val.children && freshBody.data.val.children.val) {
+                var bodyChildren = freshBody.data.val.children.val;
+                var len = bodyChildren.length || (typeof bodyChildren.size === 'number' ? bodyChildren.size : 0);
+
+                // Find the target "after" element index
+                var targetIdx = -1;
+                var pastedIdx = len - 1; // paste appends at end
+
+                for (var bi = 0; bi < len; bi++) {
+                  var ch = bodyChildren[bi] || (bodyChildren.get ? bodyChildren.get(bi) : null);
+                  if (!ch || !ch.val) continue;
+
+                  if (afterId && ch.val.id === afterId) {
+                    targetIdx = bi;
+                  } else if (afterClass) {
+                    // Check style blocks for class name match
+                    var chData = ch.val.data;
+                    if (chData && chData.val && chData.val.styleBlockIds && chData.val.styleBlockIds.val) {
+                      var sbIds = chData.val.styleBlockIds.val;
+                      var sb = window._webflow.state.StyleBlockStore.styleBlocks;
+                      for (var si = 0; si < (sbIds.length || sbIds.size || 0); si++) {
+                        var sbEntry = sbIds[si] || (sbIds.get ? sbIds.get(si) : null);
+                        if (sbEntry) {
+                          var sbId = sbEntry.val || sbEntry;
+                          var block = sb.get(sbId);
+                          if (block && block.get('name') === afterClass) {
+                            targetIdx = bi;
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+
+                if (targetIdx >= 0 && pastedIdx > targetIdx + 1) {
+                  // Need to move: select pasted element, then move after target
+                  var pastedChild = bodyChildren[pastedIdx] || (bodyChildren.get ? bodyChildren.get(pastedIdx) : null);
+                  var targetChild = bodyChildren[targetIdx] || (bodyChildren.get ? bodyChildren.get(targetIdx) : null);
+                  if (pastedChild && pastedChild.val && targetChild && targetChild.val) {
+                    window._webflow.dispatch({
+                      type: 'ELEMENT_MOVED',
+                      payload: {
+                        nativeId: pastedChild.val.id,
+                        targetNativeId: targetChild.val.id,
+                        position: 'after',
+                        designerState: window._webflow.state.DesignerStore,
+                        uiNodeState: window._webflow.state.UiNodeStore
+                      }
+                    });
+                    console.log('[plinth-bridge] build_v2 reordered section after target');
+                  }
+                }
+              }
+            }
+
+            updateExistingStyles(xscpResult.stylesToUpdate).then(function (updatedCount) {
+              resolve({
+                success: true,
+                nodeCount: nodeCount,
+                styleCount: styleCount,
+                updatedStyleCount: updatedCount,
+                rootId: xscpResult.rootId,
+                reordered: true
+              });
+            });
+          }, 500); // wait for paste to settle
+        } else {
+          updateExistingStyles(xscpResult.stylesToUpdate).then(function (updatedCount) {
+            resolve({
+              success: true,
+              nodeCount: nodeCount,
+              styleCount: styleCount,
+              updatedStyleCount: updatedCount,
+              rootId: xscpResult.rootId,
+              reordered: false
+            });
+          });
+        }
+      }, 200); // wait for NODE_CLICKED
+    });
+  }
+
+  // -- List Variables handler ---------------------------------------------------
+
+  // -- Variable creation via RPC dispatch ------------------------------------
+  // Dispatches POST_MESSAGE_RECEIVED with JSON-RPC payload to invoke
+  // Webflow's internal createColorVariable / createSizeVariable / etc. handlers.
+  // This goes through the full RPC chain: validate, dedupe names, update store, persist to server.
+
+  var VARIABLE_TYPE_METHODS = {
+    color: 'createColorVariable',
+    length: 'createSizeVariable',
+    'font-family': 'createFontFamilyVariable',
+    number: 'createNumberVariable',
+    percentage: 'createPercentageVariable'
+  };
+
+  function handleCreateVariables(payload) {
+    var variables = payload.variables || [];
+    if (!variables.length) return { created: [], error: 'No variables provided' };
+
+    var collectionId = payload.collectionId;
+    if (!collectionId) {
+      // Default to first non-default collection
+      var state = window._webflow.getState();
+      var cvs = state.CssVariablesStore;
+      if (cvs && cvs.variableCollections) {
+        var colls = (typeof cvs.variableCollections.toJS === 'function') ? cvs.variableCollections.toJS() : cvs.variableCollections;
+        var collKeys = Object.keys(colls);
+        for (var ci = 0; ci < collKeys.length; ci++) {
+          var c = colls[collKeys[ci]];
+          if (c && !c.isDefault && !c.deleted) {
+            collectionId = c.id;
+            break;
+          }
+        }
+      }
+      if (!collectionId) return { created: [], error: 'No variable collection found' };
+    }
+
+    var created = [];
+    var errors = [];
+
+    for (var i = 0; i < variables.length; i++) {
+      var v = variables[i];
+      var type = v.type || 'color';
+      var method = VARIABLE_TYPE_METHODS[type];
+      if (!method) {
+        errors.push({ name: v.name, error: 'Unknown type: ' + type });
+        continue;
+      }
+
+      var varId = 'variable-' + crypto.randomUUID();
+      var params = {
+        id: varId,
+        name: v.name,
+        collectionId: collectionId
+      };
+
+      // Build value based on type
+      if (type === 'color') {
+        params.value = { type: 'color', value: v.value };
+      } else if (type === 'length') {
+        // value should be { value: number, unit: string }
+        params.value = v.value;
+      } else if (type === 'font-family') {
+        params.value = { type: 'font-family', value: v.value };
+      } else {
+        params.value = { type: type, value: v.value };
+      }
+
+      try {
+        window._webflow.dispatch({
+          type: 'POST_MESSAGE_RECEIVED',
+          payload: {
+            data: {
+              jsonrpc: '2.0',
+              id: String(Date.now()) + '-' + i,
+              method: method,
+              params: params
+            },
+            source: 'plinth-bridge',
+            communicationType: 'localEvent'
+          }
+        });
+        created.push({ id: varId, name: v.name, type: type });
+      } catch (e) {
+        errors.push({ name: v.name, error: e.message || String(e) });
+      }
+    }
+
+    return {
+      created: created,
+      errors: errors.length ? errors : undefined,
+      count: created.length,
+      collectionId: collectionId
+    };
+  }
+
+  function handleListVariables() {
+    var variables = [];
+    var collections = {};
+    try {
+      var state = window._webflow.getState();
+      var cvs = state.CssVariablesStore;
+      if (!cvs) return { variables: [], count: 0, error: 'CssVariablesStore not found' };
+
+      // Build collection name map
+      var rawColls = cvs.variableCollections;
+      if (rawColls) {
+        var plainColls = (typeof rawColls.toJS === 'function') ? rawColls.toJS() : rawColls;
+        var collKeys = Object.keys(plainColls);
+        for (var ci = 0; ci < collKeys.length; ci++) {
+          var coll = plainColls[collKeys[ci]];
+          if (coll && coll.id) collections[coll.id] = coll.name || '';
+        }
+      }
+
+      // Read variables
+      if (cvs.variables) {
+        var rawVars = cvs.variables;
+        var plainVars = (typeof rawVars.toJS === 'function') ? rawVars.toJS() : rawVars;
+        var varKeys = Object.keys(plainVars);
+        for (var vi = 0; vi < varKeys.length; vi++) {
+          var v = plainVars[varKeys[vi]];
+          if (!v || v.deleted) continue;
+          var entry = {
+            id: v.id,
+            name: v.name || '',
+            type: v.type || '',
+          };
+          // Extract display value
+          if (v.value && typeof v.value === 'object') {
+            entry.value = v.value.value || '';
+            entry.valueType = v.value.type || '';
+          } else {
+            entry.value = v.value || '';
+          }
+          if (v.collectionId && collections[v.collectionId]) {
+            entry.collection = collections[v.collectionId];
+          }
+          variables.push(entry);
+        }
+      }
+    } catch (e) {
+      return { variables: variables, error: e.message || String(e) };
+    }
+    return { variables: variables, count: variables.length };
+  }
+
+  // -- Capture XscpData handler -------------------------------------------------
+
+  // -- Update existing styles via v1 setStyle pipeline -----------------------
+  // Accepts { styles: [{ name, properties: { cssProperty: value } }] }
+  // Finds an element with the given class, selects it, and applies styles.
+  function handleUpdateStyles(payload) {
+    var styleEntries = payload.styles;
+    if (!styleEntries || !styleEntries.length) throw new Error('payload.styles[] is required');
+
+    var ds = window._webflow.state && window._webflow.state.DesignerStore;
+    if (!ds) throw new Error('DesignerStore not available');
+
+    // Build styleId → name map from StyleBlockStore
+    var sb = window._webflow.state.StyleBlockStore.styleBlocks;
+    var styleIdToName = {};
+    var styleNameToId = {};
+    sb.forEach(function (v, k) {
+      var name = v.get('name');
+      if (name) {
+        styleIdToName[k] = name;
+        styleNameToId[name] = k;
+      }
+    });
+
+    // Walk the expression tree (same structure as handleSnapshot) to find className → elementId
+    var classToElementId = {};
+    function walkForClasses(el) {
+      if (!el) return;
+      var id = el.id || null;
+      var data = el.data;
+      if (data && data.val && data.val.styleBlockIds && data.val.styleBlockIds.val) {
+        var sbIds = data.val.styleBlockIds.val;
+        var len = sbIds.length || (typeof sbIds.size === 'number' ? sbIds.size : 0);
+        for (var i = 0; i < len; i++) {
+          var sbEntry = sbIds[i] || (sbIds.get ? sbIds.get(i) : null);
+          if (sbEntry) {
+            var sbId = sbEntry.val || sbEntry;
+            var nm = styleIdToName[sbId];
+            if (nm && !classToElementId[nm]) {
+              classToElementId[nm] = id;
+            }
+          }
+        }
+      }
+      // Recurse into children
+      if (data && data.val && data.val.children && data.val.children.val) {
+        var children = data.val.children.val;
+        var cLen = children.length || (typeof children.size === 'number' ? children.size : 0);
+        for (var i = 0; i < cLen; i++) {
+          var child = children[i] || (children.get ? children.get(i) : null);
+          if (child && child.val) walkForClasses(child.val);
+        }
+      }
+    }
+
+    // Find the page component and walk from body
+    var pageComp = null;
+    ds.components.forEach(function (v, k) {
+      var ks = String(k);
+      if (ks.indexOf('SitePlugin') >= 0 && ks.indexOf('page') >= 0) pageComp = v;
+    });
+    if (pageComp && pageComp.render && pageComp.render.val) {
+      walkForClasses(pageComp.render.val);
+    }
+
+    var SETTLE_MS = 300;
+    var SYNC_MS = 100;
+
+    // Process each style entry sequentially
+    function processEntry(index, results) {
+      if (index >= styleEntries.length) {
+        return Promise.resolve(results);
+      }
+
+      var entry = styleEntries[index];
+      var name = entry.name;
+      var properties = entry.properties || {};
+      var elementId = classToElementId[name];
+
+      if (!elementId) {
+        results.push({ name: name, ok: false, error: 'No element found with class "' + name + '"' });
+        return processEntry(index + 1, results);
+      }
+
+      // Select the element
+      window._webflow.dispatch({
+        type: 'NODE_CLICKED',
+        payload: {
+          nativeIdPath: [elementId],
+          isMultiSelectModifierKeyActive: false,
+          nativeIdInCurrentComponent: elementId
+        }
+      });
+
+      return new Promise(function (resolve) {
+        setTimeout(function () {
+          // Sync canvas node
+          syncCanvasNode(elementId);
+
+          setTimeout(function () {
+            // Apply styles
+            applyStyles(properties).then(function () {
+              var propCount = Object.keys(properties).length;
+              results.push({ name: name, ok: true, propertiesSet: propCount });
+              // Next entry
+              setTimeout(function () {
+                resolve(processEntry(index + 1, results));
+              }, 100);
+            });
+          }, SYNC_MS);
+        }, SETTLE_MS);
+      });
+    }
+
+    return processEntry(0, []).then(function (results) {
+      var ok = results.filter(function (r) { return r.ok; }).length;
+      var failed = results.filter(function (r) { return !r.ok; }).length;
+      return { updated: ok, failed: failed, results: results };
+    });
+  }
+
+  function handleCaptureXscp(payload) {
+    var elementId = payload.elementId;
+    if (!elementId) throw new Error('payload.elementId is required');
+
+    // Select the element
+    window._webflow.dispatch({
+      type: 'NODE_CLICKED',
+      payload: {
+        nativeIdPath: [elementId],
+        isMultiSelectModifierKeyActive: false,
+        nativeIdInCurrentComponent: elementId
+      }
+    });
+
+    return new Promise(function (resolve) {
+      setTimeout(function () {
+        // Strategy: dispatch a synthetic 'copy' event with a writable clipboardData.
+        // Webflow's copy handler (registered on the copy event) serializes the selected
+        // element and calls clipboardData.setData('application/json', xscpJSON).
+        // We intercept that via our fake clipboardData.
+        var captured = null;
+
+        var fakeClipboard = {
+          _data: {},
+          setData: function (type, data) {
+            this._data[type] = data;
+            if (type === 'application/json') {
+              try { captured = JSON.parse(data); } catch (e) { /* ignore */ }
+            }
+          },
+          getData: function (type) { return this._data[type] || ''; },
+          clearData: function () { this._data = {}; },
+          types: [],
+          items: [],
+          files: []
+        };
+
+        var copyEvent = new Event('copy', { bubbles: true, cancelable: true });
+        Object.defineProperty(copyEvent, 'clipboardData', { value: fakeClipboard });
+        document.body.dispatchEvent(copyEvent);
+
+        if (captured) {
+          resolve({
+            captured: true,
+            elementId: elementId,
+            xscpData: captured,
+            nodeCount: (captured.payload && captured.payload.nodes) ? captured.payload.nodes.length : 0,
+            styleCount: (captured.payload && captured.payload.styles) ? captured.payload.styles.length : 0
+          });
+        } else {
+          resolve({
+            captured: false,
+            elementId: elementId,
+            error: 'No XscpData captured. Webflow copy handler may not have fired.'
+          });
+        }
+      }, 300); // wait for NODE_CLICKED
+    });
+  }
+
   // -- Message listener ------------------------------------------------------
 
   window.addEventListener('message', function (event) {
@@ -1735,6 +2514,21 @@
           break;
         case 'paste':
           result = handlePaste(msg.payload || {});
+          break;
+        case 'build_v2':
+          result = handleBuildV2(msg.payload || {});
+          break;
+        case 'list_variables':
+          result = handleListVariables();
+          break;
+        case 'create_variables':
+          result = handleCreateVariables(msg.payload || {});
+          break;
+        case 'capture_xscp':
+          result = handleCaptureXscp(msg.payload || {});
+          break;
+        case 'update_styles':
+          result = handleUpdateStyles(msg.payload || {});
           break;
         default:
           throw new Error('Unknown command type: ' + type);
