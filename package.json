@@ -1,18 +1,12 @@
 {
   "name": "plinth",
-  "version": "0.1.0",
-  "description": "Queue-based Webflow page builder — generate BuildPlan JSON, queue it, watch it appear in the Designer",
+  "version": "0.2.0",
+  "description": "Webflow page builder — generate SectionSpec trees, paste via XscpData bridge",
   "bin": {
     "plinth": "bin/plinth.js"
   },
   "scripts": {
-    "dev": "concurrently --names \"relay,ext\" --prefix-colors \"cyan,magenta\" \"npm run dev:relay\" \"npm run dev:extension\"",
-    "dev:extension": "cd extension && npm run dev",
-    "dev:relay": "PLINTH_CONFIG=$(pwd)/.plinth.json node mcp-server/index.js",
-    "validate": "node -e \"const s = require('./skill/schemas/buildplan.schema.json'); console.log('Schema OK:', s.title)\""
-  },
-  "devDependencies": {
-    "concurrently": "^8.2.2"
+    "dev": "node mcp-server/index.js"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.0.0",
@@ -21,15 +15,19 @@
     "express": "^4.18.0",
     "zod": "^3.22.0"
   },
+  "optionalDependencies": {
+    "puppeteer-core": "^24.37.5"
+  },
   "files": [
     "bin/",
     "mcp-server/",
     "skill/",
+    "inspector/",
     "reference/",
     "CLAUDE.md",
     "README.md"
   ],
-  "keywords": ["webflow", "cms", "page-builder", "mcp", "claude"],
+  "keywords": ["webflow", "page-builder", "mcp", "claude", "xscpdata"],
   "license": "MIT",
   "engines": {
     "node": ">=18"

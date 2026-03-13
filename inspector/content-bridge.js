@@ -439,12 +439,32 @@
     return prop.replace(/-([a-z])/g, function (m, c) { return c.toUpperCase(); });
   }
 
-  // Convert a CSS value to the format setStyle expects
+  // Properties where setStyle must receive a STRING with unit (not a raw number).
+  // Raw numbers get stored unitless in variant styleLess (e.g. "grid-column-gap: 24;"
+  // instead of "24px"), producing broken CSS. Strings like "24px" are preserved correctly.
+  var STRING_UNIT_PROPS = /^(gridColumnGap|gridRowGap)$/;
+
+  // Convert a CSS value to the format setStyle expects.
+  // Webflow's setStyle appends "px" to raw numbers, so we must:
+  //   - Return a number for pure px values (e.g. "16px" → 16)
+  //   - Return "Npx" string for gap props (numbers stored unitless in variants = broken CSS)
+  //   - Return { value: N, unit: '%' } for percentage values (e.g. "100%" → {value:100,unit:'%'})
+  //   - Return null for "auto" (clears the property from the current breakpoint)
+  //   - Return the string as-is for non-numeric values (e.g. "center", "column")
   function toStyleValue(path, value) {
+    if (value === null || value === 'auto') return null;
     if (NUMERIC_PROPS.test(path)) {
-      // Strip "px", "rem", etc. and return number
+      // Check for percentage values first
+      if (typeof value === 'string' && value.indexOf('%') >= 0) {
+        var pct = parseFloat(value);
+        if (!isNaN(pct)) return { value: String(pct), unit: '%' };
+      }
       var num = parseFloat(value);
-      if (!isNaN(num)) return num;
+      if (!isNaN(num)) {
+        // Gap properties: return string with unit to avoid unitless variant storage
+        if (STRING_UNIT_PROPS.test(path)) return num + 'px';
+        return num;
+      }
     }
     return value;
   }
@@ -493,6 +513,22 @@
       type: 'CANVAS_BODY_RENDERED',
       payload: { nodeNativeId: uuid, computedStyle: computedStyle }
     });
+  }
+
+  // Switch the Designer viewport to a specific breakpoint by clicking the toolbar button.
+  // Returns a Promise that resolves after the canvas has resized.
+  var BREAKPOINT_IDS = ['main', 'medium', 'small', 'tiny'];
+  function switchBreakpoint(bpId) {
+    if (BREAKPOINT_IDS.indexOf(bpId) < 0) {
+      return Promise.reject(new Error('Invalid breakpoint: ' + bpId));
+    }
+    var btn = document.querySelector('[data-automation-id="breakpoint-button-shortcut-' + bpId + '"]');
+    if (!btn) {
+      return Promise.reject(new Error('Breakpoint button not found for: ' + bpId));
+    }
+    btn.click();
+    // Wait for canvas resize to complete
+    return new Promise(function (resolve) { setTimeout(resolve, 400); });
   }
 
   // Apply styles to the currently synced element via StyleActionCreators.
@@ -1188,14 +1224,40 @@
   // -- Delete handler ---------------------------------------------------------
 
   function handleDelete(payload) {
+    console.log('[plinth-bridge] handleDelete v6 called');
     var elementIds = payload.elementIds;
     if (!elementIds || !Array.isArray(elementIds) || elementIds.length === 0) {
       throw new Error('payload.elementIds (array) is required');
     }
 
-    var DELAY_MS = 150;
+    // v6: Route through handleProbe's new Function() execution context.
+    // Direct calls from the message handler don't trigger Webflow's keyboard
+    // handler properly, but new Function() (same as probe) does.
+    // This selects via NODE_CLICKED then dispatches Backspace keydown on document.body.
+    var BETWEEN_MS = 500;
     var deleted = 0;
     var errors = [];
+
+    // Build the delete function — runs in new Function() context like probe
+    var deleteOneFn = new Function('_webflow', 'elId', 'doc', [
+      '_webflow.dispatch({',
+      '  type: "NODE_CLICKED",',
+      '  payload: {',
+      '    nativeIdPath: [elId],',
+      '    isMultiSelectModifierKeyActive: false,',
+      '    nativeIdInCurrentComponent: elId',
+      '  }',
+      '});',
+      'var sel = _webflow.state.UiNodeStore.selectedNodeNativeId;',
+      'if (sel !== elId) return { ok: false, error: "selection failed: " + (sel || "null") };',
+      'var ev = new KeyboardEvent("keydown", {',
+      '  key: "Backspace", code: "Backspace",',
+      '  keyCode: 8, which: 8,',
+      '  bubbles: true, cancelable: true',
+      '});',
+      'doc.body.dispatchEvent(ev);',
+      'return { ok: true };'
+    ].join('\n'));
 
     return new Promise(function (resolve) {
       var idx = 0;
@@ -1209,35 +1271,25 @@
         var elId = elementIds[idx];
         idx++;
 
-        // Select the element
-        window._webflow.dispatch({
-          type: 'NODE_CLICKED',
-          payload: {
-            nativeIdPath: [elId],
-            isMultiSelectModifierKeyActive: false,
-            nativeIdInCurrentComponent: elId
-          }
-        });
-
-        setTimeout(function () {
-          try {
-            window._webflow.dispatch({
-              type: 'DELETE_KEY_PRESSED',
-              payload: {
-                abstractNodeState: window._webflow.state.AbstractNodeStore,
-                uiNodeState: window._webflow.state.UiNodeStore,
-                collectionState: window._webflow.state.CollectionStore,
-                designerState: window._webflow.state.DesignerStore,
-                pageState: window._webflow.state.PageStore,
-                ix2State: window._webflow.state.IX2Store
-              }
-            });
+        try {
+          var result = deleteOneFn(window._webflow, elId, document);
+          if (result.ok) {
             deleted++;
-          } catch (e) {
-            errors.push(elId.substring(0, 8) + ': ' + e.message);
+            console.log('[plinth-bridge] Deleted element ' + elId.substring(0, 8));
+          } else {
+            errors.push(elId.substring(0, 8) + ': ' + result.error);
           }
-          setTimeout(deleteNext, DELAY_MS);
-        }, 100);
+        } catch (e) {
+          errors.push(elId.substring(0, 8) + ': ' + e.message);
+        }
+
+        if (idx < elementIds.length) {
+          setTimeout(deleteNext, BETWEEN_MS);
+        } else {
+          setTimeout(function () {
+            resolve({ deleted: deleted, errors: errors });
+          }, 200);
+        }
       }
 
       deleteNext();
@@ -1758,9 +1810,10 @@
 
     // Register a style. If the style already exists in Webflow, just reference its _id
     // (don't emit — paste creates duplicates with " 2" suffix even with matching _id).
-    // Track styles that need post-paste updates in stylesToUpdate[].
+    // To update responsive variants on existing styles: delete section → rebuild (styles
+    // are cleaned from StyleBlockStore when no elements reference them).
     var stylesToUpdate = []; // { name, cssStr } — existing styles needing property updates
-    function ensureStyle(className, cssStr) {
+    function ensureStyle(className, cssStr, responsive) {
       if (!className) return [];
       if (styleIdMap[className]) return [styleIdMap[className]];
 
@@ -1776,6 +1829,19 @@
       var styleId = crypto.randomUUID();
       styleIdMap[className] = styleId;
 
+      // Build variants from responsive breakpoint overrides
+      var variants = {};
+      if (responsive && typeof responsive === 'object') {
+        var bpKeys = Object.keys(responsive);
+        for (var bi = 0; bi < bpKeys.length; bi++) {
+          var bp = bpKeys[bi];
+          var bpCss = responsive[bp];
+          if (bpCss) {
+            variants[bp] = { styleLess: resolveVariableRefs(bpCss) };
+          }
+        }
+      }
+
       var resolved = resolveVariableRefs(cssStr || '');
 
       styles.push({
@@ -1786,7 +1852,7 @@
         namespace: '',
         comb: '',
         styleLess: resolved || '',
-        variants: {},
+        variants: variants,
         children: [],
         selector: null
       });
@@ -1801,7 +1867,7 @@
       if (!xscpInfo) throw new Error('Unknown element type for v2: ' + spec.type);
 
       var nodeId = crypto.randomUUID();
-      var classIds = ensureStyle(spec.className, spec.styles);
+      var classIds = ensureStyle(spec.className, spec.styles, spec.responsive);
 
       // Also add any extra classes (combo classes)
       if (spec.classes && Array.isArray(spec.classes)) {
@@ -1903,7 +1969,7 @@
     if (sharedStyles && sharedStyles.length > 0) {
       for (var si = 0; si < sharedStyles.length; si++) {
         var ss = sharedStyles[si];
-        ensureStyle(ss.name, ss.styles || '');
+        ensureStyle(ss.name, ss.styles || '', ss.responsive);
       }
     }
 
@@ -2339,20 +2405,15 @@
     var SETTLE_MS = 300;
     var SYNC_MS = 100;
 
-    // Process each style entry sequentially
-    function processEntry(index, results) {
-      if (index >= styleEntries.length) {
-        return Promise.resolve(results);
-      }
-
-      var entry = styleEntries[index];
+    // Apply a single style entry at the current breakpoint
+    function applyEntry(entry, results) {
       var name = entry.name;
       var properties = entry.properties || {};
       var elementId = classToElementId[name];
 
       if (!elementId) {
         results.push({ name: name, ok: false, error: 'No element found with class "' + name + '"' });
-        return processEntry(index + 1, results);
+        return Promise.resolve();
       }
 
       // Select the element
@@ -2367,25 +2428,58 @@
 
       return new Promise(function (resolve) {
         setTimeout(function () {
-          // Sync canvas node
           syncCanvasNode(elementId);
-
           setTimeout(function () {
-            // Apply styles
             applyStyles(properties).then(function () {
               var propCount = Object.keys(properties).length;
-              results.push({ name: name, ok: true, propertiesSet: propCount });
-              // Next entry
-              setTimeout(function () {
-                resolve(processEntry(index + 1, results));
-              }, 100);
+              results.push({ name: name, ok: true, propertiesSet: propCount, breakpoint: entry.breakpoint || 'main' });
+              setTimeout(resolve, 100);
             });
           }, SYNC_MS);
         }, SETTLE_MS);
       });
     }
 
-    return processEntry(0, []).then(function (results) {
+    // Group entries by breakpoint (default to 'main')
+    var groups = {};
+    for (var ei = 0; ei < styleEntries.length; ei++) {
+      var bp = styleEntries[ei].breakpoint || 'main';
+      if (!groups[bp]) groups[bp] = [];
+      groups[bp].push(styleEntries[ei]);
+    }
+
+    var bpOrder = Object.keys(groups);
+    var results = [];
+
+    // Process each breakpoint group: switch → apply entries → next group
+    function processGroup(gi) {
+      if (gi >= bpOrder.length) return Promise.resolve();
+      var bpId = bpOrder[gi];
+      var entries = groups[bpId];
+
+      // Switch breakpoint if not main
+      var switchPromise = (bpId !== 'main')
+        ? switchBreakpoint(bpId)
+        : Promise.resolve();
+
+      return switchPromise.then(function () {
+        // Apply all entries for this breakpoint sequentially
+        function applyNext(idx) {
+          if (idx >= entries.length) return Promise.resolve();
+          return applyEntry(entries[idx], results).then(function () {
+            return applyNext(idx + 1);
+          });
+        }
+        return applyNext(0);
+      }).then(function () {
+        return processGroup(gi + 1);
+      });
+    }
+
+    return processGroup(0).then(function () {
+      // Always return to main breakpoint
+      return switchBreakpoint('main');
+    }).then(function () {
       var ok = results.filter(function (r) { return r.ok; }).length;
       var failed = results.filter(function (r) { return !r.ok; }).length;
       return { updated: ok, failed: failed, results: results };
@@ -2476,6 +2570,21 @@
     try {
       var result;
       switch (type) {
+        case 'discover_site_id':
+          // Return the siteId from Webflow's internal state
+          try {
+            var store = window._webflow && window._webflow.state && window._webflow.state.SiteDataStore;
+            var raw = store && (typeof store.toJS === 'function' ? store.toJS() : store);
+            var sid = raw && (raw._id || raw.siteId || raw.id);
+            if (sid) {
+              sendResult(true, { siteId: sid });
+            } else {
+              sendResult(false, null, 'Could not find siteId in SiteDataStore');
+            }
+          } catch (e) {
+            sendResult(false, null, 'Error getting siteId: ' + e.message);
+          }
+          return;
         case 'ping':
           result = handlePing();
           break;

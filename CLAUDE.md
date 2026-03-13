@@ -1,72 +1,89 @@
 # Webflow Builder (Plinth)
 
-Build complete Webflow pages by generating structured BuildPlan JSON.
-Plans are queued in a CMS collection and executed by a Designer Extension.
+Build complete Webflow pages by generating SectionSpec trees with inline CSS.
+A content script bridge converts them to XscpData and pastes atomically into the Designer.
 
 ## Architecture
-- Claude generates BuildPlan JSON (see skill/SKILL.md)
-- Plans are written to a "_Build Queue" CMS collection on the target site
-- A Designer Extension polls the queue and builds elements via Designer API
-- Claude Code uses the MCP server tools directly (queue_buildplan, get_queue_status, etc.)
+- Claude generates SectionSpec trees (see skill/SKILL.md)
+- MCP tools send them to the relay (localhost:3847)
+- The Inspector Chrome extension's content scripts handle the bridge:
+  - content-bridge.js (MAIN world): builds XscpData, resolves variables, pastes
+  - content-isolated.js (ISOLATED world): polls relay, relays results
+- No Designer Extension panel needed — only the Inspector Chrome extension
 
 ## Key Files
-- `skill/SKILL.md` — How to generate valid BuildPlans
-- `skill/examples/` — Reference BuildPlan JSONs
-- `extension/` — The Webflow Designer Extension (React/TypeScript)
-- `mcp-server/mcp.js` — MCP tool server for Claude Code
-- `mcp-server/index.js` — HTTP relay (for manual use / curl)
+- `skill/SKILL.md` — SectionSpec format, tool reference, workflow
+- `inspector/` — Chrome extension (content scripts for bridge)
+- `mcp-server/mcp.js` — MCP tool server (stdio, for Claude Code)
+- `mcp-server/index.js` — HTTP relay (localhost:3847)
 
 ## MCP Tools Available
 When the MCP server is registered, these tools are available:
-- `queue_buildplan(plan)` — validate + add a BuildPlan to the queue
-- `get_queue_status(siteId)` — list all queue items and their status
-- `clear_queue(siteId)` — remove done/error items
-- `health_check()` — verify Webflow connectivity for all configured sites
-- `list_pages(siteId)` — list all pages with id, title, slug (use to get pageId)
-- `get_page_dom(siteId, pageId)` — get all text/content nodes with class names via Data API (always works, no extension needed)
-- `list_styles(siteId, pageId)` — list all CSS class names used on a page via Data API
-- `get_page_snapshot(siteId)` — get the full structural DOM (sections, containers, all elements) via the Designer Extension (requires extension open + connected)
-- `delete_elements(siteId, elementIds[])` — delete elements by ID (IDs from get_page_snapshot)
-- `delete_section(siteId, sectionClass)` — delete all Sections with a given class name
-- `update_styles(siteId, styles[])` — update CSS properties on existing named styles
-- `update_content(siteId, updates[])` — patch text/href/src/alt on elements by class name
-- `insert_elements(siteId, nodes[], parentClass?, afterClass?)` — add elements inside or after an existing element
-- `take_screenshot(siteId, sectionClass?, pageSlug?, skipPublish?)` — publish to staging + screenshot (requires puppeteer-core)
 
-**Note**: `get_page_dom` and `list_styles` use the Webflow Data API and reflect saved content nodes only (no structural elements). All other extension tools require the Designer Extension to be open and connected.
+### Build & Verify
+- `build_section(siteId, tree, ...)` — build a section via XscpData paste (primary build tool)
+- `get_snapshot(siteId)` — structural DOM snapshot (types, IDs, classes, text)
+- `take_screenshot(siteId, sectionClass?)` — publish to staging + screenshot
+- `delete_elements(siteId, elementIds[])` — delete elements by ID
 
-## BuildPlan Rules
-- All CSS must be longhand (padding-top, not padding)
-- Every visible element needs a className (kebab-case)
-- Text content goes in the `text` field, not in children
-- Headings need `headingLevel` (1-6)
-- Links/buttons need `href`
-- Images need `src` and `alt`
+### Style & Variables
+- `update_styles(siteId, styles[])` — update CSS on existing named styles
+- `list_variables(siteId)` — list all style variables
+- `create_variables(siteId, variables[])` — create new style variables
+
+### Page Management
+- `list_pages(siteId)` — list pages with id, title, slug
+- `create_page(siteId, name, ...)` — create a new page
+- `update_page(siteId, pageId, ...)` — update page settings/SEO
+- `switch_page(siteId, pageId)` — navigate Designer to a page
+- `get_page_dom(siteId, pageId)` — content nodes via Data API (no bridge needed)
+- `list_styles(siteId, pageId)` — CSS class names via Data API
+
+### CMS Binding
+- `connect_collection(siteId, elementId, collectionId)` — connect Collection List to CMS
+- `bind_field(siteId, elementId, fieldSlug)` — bind CMS field to element
+
+### Advanced
+- `ping(siteId)` — check bridge connectivity
+- `probe(siteId, expr)` — evaluate JS in Designer context
+- `execute(siteId, namespace, method, args?)` — call _webflow.creators action
+- `capture_xscp(siteId, elementId)` — capture element's XscpData for replay
+- `paste_xscp(siteId, xscpData, targetElementId)` — raw XscpData paste
+- `copy_to_webflow(payload)` — copy XscpData to system clipboard
+
+`get_page_dom` and `list_styles` use the Webflow Data API (always work).
+All other tools require the Inspector Chrome extension and Webflow Designer open.
+
+## SectionSpec Rules
+- Each node: `{ type, className, styles: "CSS string", text?, headingLevel?, children: [...] }`
+- CSS must be longhand (`padding-top`, not `padding`)
+- Every visible element needs a `className` (kebab-case)
+- Text content goes in `text`, not in children
+- Headings need `headingLevel` (1-6), Links/Buttons need `href`, Images need `src` + `alt`
 - Max nesting: 6 levels
-- One BuildPlan = one section (Section as root element)
-- Use `insertAfterSectionClass` to place a section after an existing one (by class name — no element ID needed)
-- Use `insertAfterElementId` when you need precision (element ID from `get_page_snapshot`)
+- One `build_section` call = one Section as root
+- Variable references: `$Variable Name` → resolved automatically
+- Font families: `@raw<|'Instrument Serif', Georgia, serif|>`
+- Use `insertAfterSectionClass` to position after an existing section
 
 ## Workflow
-1. Read skill/SKILL.md and the relevant design system doc
-2. Orient: `get_page_snapshot` to see what's on canvas, `get_queue_status` to check for pending items
-3. Generate a BuildPlan for **one section at a time**
-4. Call `queue_buildplan(plan, wait=true)` — blocks until built, returns errors inline
-5. **Verify — mandatory, no skipping:**
-   - `get_page_snapshot` — confirm section exists, element count is correct, no duplicates
-   - `take_screenshot(siteId, sectionClass="…")` — visually confirm layout looks right; fix anything broken before continuing
-6. Use `insertAfterSectionClass` set to the just-built section's class for the next section
-7. Repeat from step 3
+1. Orient: `get_snapshot` to see what's on canvas
+2. Prepare: `list_variables` / `create_variables` for design tokens
+3. Build one section: `build_section(siteId, tree)`
+4. **Verify — mandatory, no skipping:**
+   - `get_snapshot` — confirm section exists, structure correct
+   - `take_screenshot(siteId, sectionClass="…")` — visual check
+5. Set `insertAfterSectionClass` to the just-built section's class for the next section
+6. Repeat from step 3
 
 **Never proceed to the next section without completing both verification steps.**
 
-**Editing existing sections**: use `update_styles`, `update_content`, or `replacesSectionClass` in BuildPlan — see skill/SKILL.md for the decision guide.
+**Editing existing sections**: use `update_styles` to tweak CSS, or `delete_elements` + `build_section` to rebuild.
 
 ## Setting Up for a New Project
-See the full walkthrough in the project README. Short version:
 1. Get a Webflow site-level API token (Site Settings → Apps & Integrations → API Access)
-2. Create a `.plinth.json` in the project directory
-3. Register the MCP server: `claude mcp add plinth -s project -e PLINTH_CONFIG=$(pwd)/.plinth.json -- node /path/to/plinth/mcp-server/mcp.js`
-4. Create the `_Build Queue` CMS collection (see README for fields)
-5. Install the Designer Extension and open it in Webflow
-
+2. Run `plinth init` in the project directory
+3. Install the Inspector Chrome extension (load unpacked from plinth/inspector/)
+4. Run `plinth dev` to start the relay
+5. Open the Webflow Designer
+6. Start Claude Code in the project directory

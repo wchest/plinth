@@ -17,26 +17,23 @@ ${c.bold}Usage:${c.reset}
   plinth <command> [options]
 
 ${c.bold}Commands:${c.reset}
-  ${c.cyan}init${c.reset}          Bootstrap a new project (creates .plinth.json, _Build Queue, registers MCP)
+  ${c.cyan}init${c.reset}          Bootstrap a new project (creates .plinth.json, registers MCP)
   ${c.cyan}mcp${c.reset}           Start the MCP stdio server ${c.dim}(used by Claude Code)${c.reset}
   ${c.cyan}dev${c.reset}           Start the relay server on localhost:3847
-  ${c.cyan}health${c.reset}        Check Webflow connectivity for configured sites
-  ${c.cyan}queue list${c.reset}    Show all items in the build queue
-  ${c.cyan}queue clear${c.reset}   Remove completed (done/error) items from the queue
+  ${c.cyan}health${c.reset}        Check Webflow API + bridge connectivity
 
 ${c.bold}Config:${c.reset}
   Reads .plinth.json in the current directory, or set PLINTH_CONFIG=/path/to/config.json
-  For multiple sites: create mcp-server/sites.json (see sites.example.json)
 
 ${c.bold}Examples:${c.reset}
   ${c.dim}# Set up a new project${c.reset}
   mkdir my-site && cd my-site && plinth init
 
+  ${c.dim}# Start the relay (leave running)${c.reset}
+  plinth dev
+
   ${c.dim}# Check everything is working${c.reset}
   plinth health
-
-  ${c.dim}# See what's in the queue${c.reset}
-  plinth queue list
 `);
 }
 
@@ -61,10 +58,6 @@ switch (command) {
 
   case 'health':
     require('./commands/health.js');
-    break;
-
-  case 'queue':
-    require('./commands/queue.js');
     break;
 
   case undefined:

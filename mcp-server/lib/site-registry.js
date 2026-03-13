@@ -11,7 +11,7 @@ const WebflowClient = require('./webflow-client');
  *
  * Config file formats supported:
  *
- * Array (multi-site, default sites.json):
+ * Array (multi-site):
  *   [
  *     { "siteId": "abc123", "name": "my-site", "apiToken": "..." },
  *     { "siteId": "def456", "name": "other",  "apiToken": "..." }
@@ -32,7 +32,7 @@ class SiteRegistry {
     if (!fs.existsSync(this.configPath)) {
       throw new Error(
         `Plinth config not found: ${this.configPath}\n` +
-        'Create it from sites.example.json (multi-site) or .plinth.example.json (single-site).'
+        'Create it with: plinth init'
       );
     }
 
@@ -59,8 +59,6 @@ class SiteRegistry {
       this.clients.set(siteId, new WebflowClient({ apiToken, siteId }));
       this.siteNames.set(siteId, name || siteId);
     }
-
-    // Startup summary is printed by the caller (index.js)
   }
 
   // Returns the WebflowClient for a given siteId. Throws 404 if not configured.
@@ -79,28 +77,11 @@ class SiteRegistry {
     return client;
   }
 
-  // Discover the _Build Queue collection for every configured site.
-  async discoverAll() {
-    const results = [];
-    for (const [siteId, client] of this.clients) {
-      const name = this.siteNames.get(siteId);
-      try {
-        const collectionId = await client.discoverQueueCollection();
-        results.push({ siteId, name, collectionId, ok: true });
-      } catch (err) {
-        results.push({ siteId, name, ok: false, error: err.message });
-      }
-    }
-    return results;
-  }
-
   // Returns a summary of all configured sites (no secrets).
   summary() {
-    return [...this.clients.entries()].map(([siteId, client]) => ({
+    return [...this.clients.entries()].map(([siteId]) => ({
       siteId,
       name: this.siteNames.get(siteId),
-      queueReady: !!client.queueCollectionId,
-      queueCollectionId: client.queueCollectionId,
     }));
   }
 }

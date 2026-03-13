@@ -10,35 +10,57 @@
 
   var RELAY_BASE = 'http://localhost:3847';
   var POLL_INTERVAL_MS = 2000;
-  var DISCOVERY_RETRY_MS = 5000;
+  var DISCOVERY_RETRY_MS = 3000;
 
   var siteId = null;
   var pollTimer = null;
   var pendingResults = {}; // id -> true (commands awaiting results)
+  var dispatchedIds = {};  // id -> true (commands already forwarded to MAIN)
 
   console.log('[plinth-bridge] ISOLATED content script loaded');
 
-  // -- SiteId discovery via /health ----------------------------------------
+  // -- SiteId discovery ----------------------------------------------------
+  // Ask the MAIN world content script for the siteId (it has access to _webflow).
+  // Falls back to URL patterns if MAIN doesn't respond.
+
+  var discoveryTimeout = null;
 
   function discoverSiteId() {
-    fetch(RELAY_BASE + '/health')
-      .then(function (res) { return res.json(); })
-      .then(function (data) {
-        // data is an array of { siteId, name, ... } or a single site object
-        var sites = Array.isArray(data) ? data : (data.sites || []);
-        if (sites.length > 0 && sites[0].siteId) {
-          siteId = sites[0].siteId;
-          console.log('[plinth-bridge] Discovered siteId:', siteId);
-          startPolling();
-        } else {
-          console.warn('[plinth-bridge] No sites found in /health response, retrying...');
-          setTimeout(discoverSiteId, DISCOVERY_RETRY_MS);
-        }
-      })
-      .catch(function () {
-        // Relay not running yet — retry
-        setTimeout(discoverSiteId, DISCOVERY_RETRY_MS);
-      });
+    // Try URL patterns first (instant, no round-trip)
+
+    // Subdomain: <site-id>.design.webflow.com
+    var subMatch = window.location.hostname.match(/^([a-f0-9]{24})\.design\.webflow\.com$/);
+    if (subMatch) {
+      siteId = subMatch[1];
+      console.log('[plinth-bridge] Discovered siteId from subdomain:', siteId);
+      startPolling();
+      return;
+    }
+
+    // Path: webflow.com/design/<site-id>
+    var pathMatch = window.location.pathname.match(/\/design\/([a-f0-9]{24})/);
+    if (pathMatch) {
+      siteId = pathMatch[1];
+      console.log('[plinth-bridge] Discovered siteId from path:', siteId);
+      startPolling();
+      return;
+    }
+
+    // Ask MAIN world for the siteId
+    console.log('[plinth-bridge] Requesting siteId from MAIN world...');
+    window.postMessage({
+      __plinthBridge: true,
+      direction: 'command',
+      id: '__discover_site_id',
+      type: 'discover_site_id',
+      payload: {},
+    }, '*');
+
+    // If MAIN doesn't respond within timeout, retry
+    discoveryTimeout = setTimeout(function () {
+      console.warn('[plinth-bridge] MAIN world did not respond with siteId, retrying...');
+      discoverSiteId();
+    }, DISCOVERY_RETRY_MS);
   }
 
   // -- Polling for pending commands ----------------------------------------
@@ -60,6 +82,10 @@
         var id = data.id;
         var type = data.type;
         var payload = data.payload || {};
+
+        // Skip if we already dispatched this command (prevents re-dispatch on every poll)
+        if (dispatchedIds[id]) return;
+        dispatchedIds[id] = true;
 
         // Track this command so we know to forward its result
         pendingResults[id] = true;
@@ -85,11 +111,29 @@
     var msg = event.data;
     if (!msg || !msg.__plinthBridge || msg.direction !== 'result') return;
 
+    // Handle siteId discovery response
+    if (msg.id === '__discover_site_id') {
+      if (discoveryTimeout) {
+        clearTimeout(discoveryTimeout);
+        discoveryTimeout = null;
+      }
+      if (msg.ok && msg.data && msg.data.siteId) {
+        siteId = msg.data.siteId;
+        console.log('[plinth-bridge] Discovered siteId from MAIN world:', siteId);
+        startPolling();
+      } else {
+        console.warn('[plinth-bridge] MAIN world could not provide siteId, retrying...');
+        setTimeout(discoverSiteId, DISCOVERY_RETRY_MS);
+      }
+      return;
+    }
+
     var id = msg.id;
 
     // Only forward results for commands we dispatched
     if (!pendingResults[id]) return;
     delete pendingResults[id];
+    delete dispatchedIds[id];
 
     // Post result back to relay
     fetch(RELAY_BASE + '/bridge/result?siteId=' + encodeURIComponent(siteId), {

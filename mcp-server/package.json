@@ -5,18 +5,6 @@
   "main": "index.js",
   "scripts": {
     "start": "node index.js",
-    "dev": "node --watch index.js",
-    "mcp": "node mcp.js",
-    "init": "node init.js"
-  },
-  "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.0.0",
-    "cors": "^2.8.5",
-    "dotenv": "^16.0.0",
-    "express": "^4.18.0",
-    "zod": "^3.22.0"
-  },
-  "optionalDependencies": {
-    "puppeteer-core": "^24.37.5"
+    "mcp": "node mcp.js"
   }
 }

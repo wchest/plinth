@@ -9,36 +9,6 @@ class WebflowClient {
 
     this.apiToken = apiToken;
     this.siteId = siteId;
-    this.queueCollectionId = null;
-  }
-
-  // Fetch all collections for the site and find _Build Queue by name.
-  // Sets this.queueCollectionId and returns it. Safe to call multiple times.
-  async discoverQueueCollection() {
-    const data = await this._request('GET', `/sites/${this.siteId}/collections`);
-    const collections = (data && data.collections) ? data.collections : [];
-    const queue = collections.find(
-      (c) => c.displayName === '_Build Queue' || c.slug === '-build-queue'
-    );
-    if (!queue) {
-      throw new Error(
-        '_Build Queue collection not found on site. ' +
-        'Create it in the Webflow dashboard first (see README).'
-      );
-    }
-    this.queueCollectionId = queue.id;
-    return queue.id;
-  }
-
-  _ensureQueue() {
-    if (!this.queueCollectionId) {
-      const err = new Error(
-        'Queue collection not yet discovered. ' +
-        'Server is still starting up or _Build Queue collection does not exist.'
-      );
-      err.status = 503;
-      throw err;
-    }
   }
 
   _headers() {
@@ -81,148 +51,22 @@ class WebflowClient {
     return res.json();
   }
 
-  _mapItem(item) {
-    const fd = item.fieldData || {};
-    const rawStatus = fd.status || '';
-    const normalizedStatus = rawStatus.toLowerCase();
-    const knownStatuses = ['pending', 'building', 'done', 'error'];
-    const status = knownStatuses.includes(normalizedStatus) ? normalizedStatus : 'pending';
-    if (rawStatus && !knownStatuses.includes(normalizedStatus)) {
-      console.warn(`[webflow-client] Unknown status value: "${rawStatus}" for item ${item.id} — treating as pending`);
-    }
-    return {
-      id: item.id,
-      name: fd.name || fd['name'] || '',
-      plan: fd.plan || '',
-      status,
-      errorMessage: fd['error-message'] || '',
-      order: fd.order != null ? fd.order : 0,
-    };
-  }
-
-  async getQueueItems() {
-    this._ensureQueue();
-    const data = await this._request(
-      'GET',
-      `/collections/${this.queueCollectionId}/items?limit=100`
-    );
-    const items = (data && data.items) ? data.items : [];
-    return items.map((item) => this._mapItem(item));
-  }
-
-  async addQueueItem({ name, plan, order }) {
-    this._ensureQueue();
-    const data = await this._request(
-      'POST',
-      `/collections/${this.queueCollectionId}/items`,
-      {
-        fieldData: {
-          name,
-          plan,
-          status: 'pending',
-          order: order != null ? order : 0,
-        },
-      }
-    );
-    return {
-      id: data.id,
-      status: (data.fieldData && data.fieldData.status) || 'pending',
-    };
-  }
-
-  async updateItemStatus(itemId, status, errorMessage) {
-    this._ensureQueue();
-    const fieldData = { status };
-    if (errorMessage !== undefined && errorMessage !== null) {
-      fieldData['error-message'] = errorMessage;
-    }
-    await this._request(
-      'PATCH',
-      `/collections/${this.queueCollectionId}/items/${itemId}`,
-      { fieldData }
-    );
-  }
-
-  async publishItem(itemId) {
-    this._ensureQueue();
-    await this._request(
-      'POST',
-      `/collections/${this.queueCollectionId}/items/${itemId}/live`,
-      {}
-    );
-  }
-
-  async getItem(itemId) {
-    this._ensureQueue();
-    const data = await this._request(
-      'GET',
-      `/collections/${this.queueCollectionId}/items/${itemId}`
-    );
-    return this._mapItem(data);
-  }
-
-  async deleteItem(itemId) {
-    this._ensureQueue();
-    await this._request(
-      'DELETE',
-      `/collections/${this.queueCollectionId}/items/${itemId}`
-    );
-  }
-
   async listPages() {
     const data = await this._request('GET', `/sites/${this.siteId}/pages`);
     return (data && data.pages) ? data.pages : [];
   }
 
-  async createPage({ title, slug, description, seoTitle, seoDescription, ogTitle, ogDescription, draft }) {
-    const body = {};
-    if (title) body.title = title;
-    if (slug) body.slug = slug;
-    if (description) body.description = description;
-    if (seoTitle) body.seo = { ...(body.seo || {}), title: seoTitle };
-    if (seoDescription) body.seo = { ...(body.seo || {}), description: seoDescription };
-    if (ogTitle) body.openGraph = { ...(body.openGraph || {}), title: ogTitle };
-    if (ogDescription) body.openGraph = { ...(body.openGraph || {}), description: ogDescription };
-    if (draft !== undefined) body.draft = draft;
-    // Note: Webflow Data API v2 does NOT have a create page endpoint.
-    // Page creation must use the Designer API (webflow.createPage) or internal dispatch.
-    // This method is kept for future API support but will currently fail.
-    return this._request('POST', `/sites/${this.siteId}/pages`, body);
-  }
-
-  async updatePage(pageId, { title, slug, description, seoTitle, seoDescription, ogTitle, ogDescription, draft }) {
-    const body = {};
-    if (title) body.title = title;
-    if (slug) body.slug = slug;
-    if (description) body.description = description;
-    if (seoTitle || seoDescription) {
-      body.seo = {};
-      if (seoTitle) body.seo.title = seoTitle;
-      if (seoDescription) body.seo.description = seoDescription;
-    }
-    if (ogTitle || ogDescription) {
-      body.openGraph = {};
-      if (ogTitle) body.openGraph.title = ogTitle;
-      if (ogDescription) body.openGraph.description = ogDescription;
-    }
-    if (draft !== undefined) body.draft = draft;
-    return this._request('PUT', `/pages/${pageId}`, body);
-  }
-
   async getPageDom(pageId) {
-    const data = await this._request('GET', `/pages/${pageId}/dom`);
-    return data;
+    return this._request('GET', `/pages/${pageId}/dom`);
   }
 
   async getPageContent(pageId, { limit = 100, offset = 0 } = {}) {
-    const data = await this._request(
+    return this._request(
       'GET', `/pages/${pageId}/dom?limit=${limit}&offset=${offset}`
     );
-    return data;
   }
 
   async listStylesFromDom(pageId) {
-    // Webflow has no REST endpoint for styles — extract class names from page DOM nodes instead
     const data = await this._request('GET', `/pages/${pageId}/dom`);
     const nodes = (data && data.nodes) ? data.nodes : [];
     const classes = new Set();
@@ -253,16 +97,12 @@ class WebflowClient {
       return {
         connected: true,
         siteId: this.siteId,
-        queueCollectionId: this.queueCollectionId,
-        queueReady: !!this.queueCollectionId,
         siteName: (data && data.displayName) || (data && data.name) || undefined,
       };
     } catch (err) {
       return {
         connected: false,
         siteId: this.siteId,
-        queueCollectionId: this.queueCollectionId,
-        queueReady: false,
         error: err.message,
       };
     }

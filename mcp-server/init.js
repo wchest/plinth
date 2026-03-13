@@ -7,16 +7,15 @@
  * Bootstraps a Webflow project for use with Plinth:
  *   1. Prompts for API token + site ID
  *   2. Verifies credentials against the Webflow API
- *   3. Creates the _Build Queue CMS collection if it doesn't exist
- *   4. Writes .plinth.json to the current directory
- *   5. Adds .plinth.json to .gitignore
- *   6. Registers the MCP server with Claude Code (project-scoped)
- *   7. Writes CLAUDE.md so Claude Code knows how to use Plinth in this project
- *   8. Writes .claude/skills/plinth/SKILL.md (Claude Code skill for BuildPlan generation)
+ *   3. Writes .plinth.json to the current directory
+ *   4. Adds .plinth.json to .gitignore
+ *   5. Registers the MCP server with Claude Code (project-scoped)
+ *   6. Writes CLAUDE.md so Claude Code knows how to use Plinth in this project
+ *   7. Writes .claude/skills/plinth/SKILL.md (Claude Code skill for section building)
  *
  * Usage:
- *   node /path/to/plinth/mcp-server/init.js
- *   node /path/to/plinth/mcp-server/init.js --site 699b... --token xxx
+ *   plinth init
+ *   plinth init --site 699b... --token xxx
  */
 
 const readline = require('readline');
@@ -127,50 +126,6 @@ async function getSite(siteId, token) {
   return webflow('GET', `/sites/${siteId}`, null, token);
 }
 
-async function listCollections(siteId, token) {
-  const data = await webflow('GET', `/sites/${siteId}/collections`, null, token);
-  return data.collections || [];
-}
-
-async function createBuildQueueCollection(siteId, token) {
-  return webflow('POST', `/sites/${siteId}/collections`, {
-    displayName:  '_Build Queue',
-    singularName: 'Build Queue Item',
-    fields: [
-      {
-        type:        'PlainText',
-        displayName: 'Plan',
-        isRequired:  false,
-        helpText:    'BuildPlan JSON (up to 64 KB)',
-      },
-      {
-        type:        'Option',
-        displayName: 'Status',
-        isRequired:  false,
-        metadata: {
-          options: [
-            { name: 'pending' },
-            { name: 'building' },
-            { name: 'done' },
-            { name: 'error' },
-          ],
-        },
-      },
-      {
-        type:        'PlainText',
-        displayName: 'Error Message',
-        isRequired:  false,
-      },
-      {
-        type:        'Number',
-        displayName: 'Order',
-        isRequired:  false,
-        helpText:    'Build sequence — lower numbers build first',
-      },
-    ],
-  }, token);
-}
-
 // ── File helpers ──────────────────────────────────────────────────────────────
 function writePlinthJson(siteId, name, token) {
   const configPath = path.join(CWD, '.plinth.json');
@@ -195,8 +150,6 @@ function ensureGitignore() {
 }
 
 function resolveMcpCommand() {
-  // Prefer `plinth mcp` (clean, portable) if the CLI is installed.
-  // Fall back to absolute node path if not (e.g. first run before npm link).
   try {
     execSync('which plinth', { stdio: 'pipe' });
     return 'plinth mcp';
@@ -230,8 +183,8 @@ const SKILL_SRC = path.join(__dirname, '..', 'skill', 'SKILL.md');
 function generateClaudeMd(siteId, name) {
   return `# ${name} — Webflow Builder
 
-Build Webflow pages by generating structured BuildPlan JSON.
-Plans are queued in a CMS collection and executed by a Designer Extension.
+Build Webflow pages by generating SectionSpec trees and pasting them via XscpData.
+The content script bridge handles variable resolution, style reuse, and atomic paste.
 
 ## Site
 - **Name**: ${name}
@@ -239,49 +192,73 @@ Plans are queued in a CMS collection and executed by a Designer Extension.
 - **MCP relay**: \`localhost:3847\`
 
 ## Architecture
-- Claude generates BuildPlan JSON (BuildPlan rules are in the auto-loaded \`plinth\` skill)
-- Plans are written to a "_Build Queue" CMS collection on the site
-- A Designer Extension polls the queue and builds elements via the Designer API
-- Claude Code calls MCP tools directly (no manual relay needed)
+- Claude generates SectionSpec trees with inline CSS strings
+- The content script bridge converts them to XscpData and pastes atomically (~50ms per section)
+- Variable references (\`$Variable Name\`) are resolved to Webflow variable UUIDs automatically
+- Existing styles are reused by name (no duplicates)
+- No Designer Extension needed — only the Plinth Inspector Chrome extension
 
 ## MCP Tools Available
 When Claude Code is open in this directory, these tools are registered:
-- \`queue_buildplan(plan, wait=true)\` — validate + add a BuildPlan; blocks until built
-- \`get_queue_status(siteId)\` — list all queue items and their status
-- \`clear_queue(siteId)\` — remove done/error items
-- \`health_check()\` — verify Webflow connectivity
-- \`list_pages(siteId)\` — list pages with id, title, slug
-- \`get_page_dom(siteId, pageId)\` — content nodes + class names (Data API, no extension)
-- \`list_styles(siteId, pageId)\` — list CSS class names on a page
-- \`get_page_snapshot(siteId)\` — full structural DOM via Designer Extension
+
+### Build & Verify
+- \`build_section(siteId, tree, insertAfterSectionClass?, ...)\` — build a section via XscpData paste
+- \`get_snapshot(siteId)\` — structural DOM snapshot (types, IDs, classes, text)
+- \`take_screenshot(siteId, sectionClass?)\` — publish to staging + screenshot
 - \`delete_elements(siteId, elementIds[])\` — delete elements by ID
-- \`delete_section(siteId, sectionClass)\` — delete Sections by class name
+
+### Style & Content
 - \`update_styles(siteId, styles[])\` — update CSS on existing named styles
-- \`update_content(siteId, updates[])\` — patch text/href/src/alt by class name
+- \`list_variables(siteId)\` — list all style variables
+- \`create_variables(siteId, variables[])\` — create new style variables
 
-Extension tools (\`get_page_snapshot\`, \`delete_*\`, \`update_*\`) require the
-Designer Extension panel to be open and connected.
+### Page Management
+- \`list_pages(siteId)\` — list pages with id, title, slug
+- \`create_page(siteId, name)\` — create a new page
+- \`update_page(siteId, pageId, ...)\` — update page settings/SEO
+- \`switch_page(siteId, pageId)\` — navigate Designer to a page
+- \`get_page_dom(siteId, pageId)\` — content nodes via Data API (no bridge needed)
+- \`list_styles(siteId, pageId)\` — CSS class names via Data API
 
-## BuildPlan Rules
-- All CSS must be longhand (\`padding-top\`, not \`padding\`)
-- Every visible element needs a \`className\` (kebab-case)
-- Text content goes in the \`text\` field, not in children
-- Headings need \`headingLevel\` (1–6)
-- Links/buttons need \`href\`
-- Images need \`src\` and \`alt\`
-- Max nesting: 6 levels
-- One BuildPlan = one section (Section as root element)
+### CMS Binding
+- \`connect_collection(siteId, elementId, collectionId)\` — connect Collection List to CMS
+- \`bind_field(siteId, elementId, fieldSlug)\` — bind CMS field to element
+
+### Advanced
+- \`ping(siteId)\` — check bridge connectivity
+- \`probe(siteId, expr)\` — evaluate JS in Designer context
+- \`execute(siteId, namespace, method, args?)\` — call _webflow.creators action
+- \`capture_xscp(siteId, elementId)\` — capture element's XscpData for replay
+- \`paste_xscp(siteId, xscpData, targetElementId)\` — raw XscpData paste
+- \`copy_to_webflow(payload)\` — copy XscpData to system clipboard
 
 ## Workflow
-1. Orient: \`get_page_snapshot(siteId)\` to see what's on canvas, \`get_queue_status\` for pending items
-3. Generate a BuildPlan for **one section at a time**
-4. Call \`queue_buildplan(plan, wait=true)\` — blocks until built, returns errors inline
-5. **Verify immediately**: call \`get_page_snapshot\` — confirm the section exists and structure is correct
-6. Use the section's element ID as \`insertAfterElementId\` for the next section
+1. Orient: \`get_snapshot(siteId)\` to see what's on canvas
+2. Prepare variables: \`list_variables\` / \`create_variables\` for design tokens
+3. Build one section: \`build_section(siteId, tree)\`
+4. Verify: \`get_snapshot\` (structure) + \`take_screenshot\` (visual)
+5. Fix issues before proceeding
+6. Set \`insertAfterSectionClass\` to the just-built section's class for the next section
 7. Repeat from step 3
 
-**Editing existing sections**: use \`update_styles\`, \`update_content\`, or \`replacesSectionClass\`
-in the BuildPlan — see \`skill/SKILL.md\` for the decision guide.
+**Never proceed to the next section without completing both verification steps.**
+
+## SectionSpec Format
+Each node: \`{ type, className, styles: "CSS string", text?, headingLevel?, children: [...] }\`
+- Shorthand CSS allowed
+- Variable references: \`$Variable Name\` → resolved automatically
+- Font families: \`@raw<|'Instrument Serif', Georgia, serif|>\`
+- See the \`plinth\` skill for full reference
+
+## Publishing
+REST API publish does NOT reliably update the live site. Use the manual **Publish** button
+in the Webflow Designer for production deploys. \`take_screenshot\` uses staging publish
+which works for verification.
+
+## Font Workaround
+Webflow strips \`font-family\` from XscpData paste. To apply custom fonts:
+1. Add fonts in Webflow Designer (Typography panel or Site Settings → Fonts)
+2. Use a CodeEmbed element with a \`<style>\` tag to apply font-family to classes
 `;
 }
 
@@ -301,7 +278,7 @@ function writeClaudeMd(siteId, name) {
   }
 
   const existing = fs.readFileSync(dest, 'utf8');
-  if (existing.includes('queue_buildplan') || existing.includes('BuildPlan Rules')) {
+  if (existing.includes('build_section') || existing.includes('SectionSpec')) {
     return 'already contains plinth config — skipped';
   }
 
@@ -309,18 +286,11 @@ function writeClaudeMd(siteId, name) {
   return 'appended to existing CLAUDE.md';
 }
 
-const SKILL_FRONTMATTER = `---
-name: plinth
-description: Generate valid Webflow BuildPlans and use plinth MCP tools to build, verify, and edit Webflow page sections. Use this skill whenever building or editing a Webflow page with Plinth.
----
-
-`;
-
 /**
- * Write the Plinth BuildPlan reference as a Claude Code skill at
- * .claude/skills/plinth/SKILL.md. Claude auto-discovers it and loads it
- * whenever the task involves building Webflow pages with Plinth.
- * Always overwrites — keeps the skill in sync with the installed plinth version.
+ * Symlink the Plinth skill reference into .claude/skills/plinth/SKILL.md.
+ * Claude auto-discovers it and loads it whenever the task involves building
+ * Webflow pages with Plinth. Uses a symlink so upgrading plinth automatically
+ * updates the skill in every project.
  */
 function writeClaudeSkill() {
   if (!fs.existsSync(SKILL_SRC)) return 'source not found — skipped';
@@ -332,8 +302,10 @@ function writeClaudeSkill() {
     fs.mkdirSync(skillDir, { recursive: true });
   }
 
-  const content = SKILL_FRONTMATTER + fs.readFileSync(SKILL_SRC, 'utf8');
-  fs.writeFileSync(dest, content);
+  // Remove existing file or broken symlink before creating new one
+  try { fs.unlinkSync(dest); } catch (e) { /* doesn't exist yet */ }
+
+  fs.symlinkSync(SKILL_SRC, dest);
   return dest;
 }
 
@@ -374,56 +346,24 @@ async function main() {
     console.log(ok(site.displayName || site.name || siteId));
   } catch (e) {
     console.log(fail(e.message));
-    if (e.status === 401) console.error('  Token may be invalid or missing CMS permissions.');
+    if (e.status === 401) console.error('  Token may be invalid or missing permissions.');
     if (e.status === 404) console.error('  Site ID not found — check the ID and token scope.');
     process.exit(1);
   }
 
-  // ── 3. Check / create _Build Queue collection ──────────────────────────────
-
-  process.stdout.write('Checking _Build Queue collection… ');
-  let collections;
-  try {
-    collections = await listCollections(siteId, apiToken);
-  } catch (e) {
-    console.log(fail(e.message));
-    process.exit(1);
-  }
-
-  const existing = collections.find(
-    (c) => c.displayName === '_Build Queue' || c.slug === '-build-queue'
-  );
-
-  if (existing) {
-    console.log(ok(`exists (${existing.id})`));
-  } else {
-    console.log(dim('not found'));
-    process.stdout.write('Creating _Build Queue collection… ');
-    try {
-      const created = await createBuildQueueCollection(siteId, apiToken);
-      console.log(ok(`created (${created.id})`));
-    } catch (e) {
-      console.log(fail(e.message));
-      if (e.status === 401 || e.status === 403) {
-        console.error('  Token needs CMS:write permission (Site Settings → API Access).');
-      }
-      process.exit(1);
-    }
-  }
-
-  // ── 4. Write .plinth.json ──────────────────────────────────────────────────
+  // ── 3. Write .plinth.json ──────────────────────────────────────────────────
 
   process.stdout.write('Writing .plinth.json… ');
   const configPath = writePlinthJson(siteId, name, apiToken);
   console.log(ok(configPath));
 
-  // ── 5. Update .gitignore ───────────────────────────────────────────────────
+  // ── 4. Update .gitignore ───────────────────────────────────────────────────
 
   process.stdout.write('Updating .gitignore… ');
   const gitignoreResult = ensureGitignore();
   console.log(ok(gitignoreResult));
 
-  // ── 6. Register MCP server with Claude Code ────────────────────────────────
+  // ── 5. Register MCP server with Claude Code ────────────────────────────────
 
   process.stdout.write('Registering MCP server with Claude Code… ');
   try {
@@ -434,7 +374,7 @@ async function main() {
     console.log(dim(`  Run manually: claude mcp add plinth -s project -e PLINTH_CONFIG=${configPath} -- node ${MCP_ENTRY}`));
   }
 
-  // ── 7. Write CLAUDE.md ─────────────────────────────────────────────────────
+  // ── 6. Write CLAUDE.md ─────────────────────────────────────────────────────
 
   process.stdout.write('Writing CLAUDE.md… ');
   try {
@@ -444,7 +384,7 @@ async function main() {
     console.log(warn(`skipped — ${e.message}`));
   }
 
-  // ── 8. Write .claude/skills/plinth/SKILL.md ───────────────────────────────
+  // ── 7. Write .claude/skills/plinth/SKILL.md ───────────────────────────────
 
   process.stdout.write('Writing Claude Code skill… ');
   try {
@@ -456,18 +396,15 @@ async function main() {
 
   // ── Done ───────────────────────────────────────────────────────────────────
 
-  console.log(`\n${bold('Done!')} Start Claude Code in this directory:\n`);
-  console.log(`  ${c.cyan}claude${c.reset}\n`);
-  console.log('Available tools:');
-  console.log(`  ${dim('queue_buildplan')}   — validate + queue a BuildPlan`);
-  console.log(`  ${dim('get_queue_status')}  — list queue items and their status`);
-  console.log(`  ${dim('clear_queue')}       — remove done/error items`);
-  console.log(`  ${dim('health_check')}      — verify Webflow connectivity`);
+  console.log(`\n${bold('Done!')} Next steps:\n`);
+  console.log(`  1. Start the relay:         ${c.cyan}plinth dev${c.reset}`);
+  console.log(`  2. Install Inspector ext:   Load unpacked from ${c.dim}plinth/inspector/${c.reset} at ${c.cyan}chrome://extensions${c.reset}`);
+  console.log(`  3. Open Webflow Designer`);
+  console.log(`  4. Start Claude Code:       ${c.cyan}claude${c.reset}`);
   console.log('');
-  console.log(`Next steps:`);
-  console.log(`  1. Run ${c.cyan}plinth dev${c.reset} to start the relay on localhost:3847`);
-  console.log(`  2. Open the Webflow Designer and install the Plinth extension`);
-  console.log(`  3. Enter ${c.cyan}http://localhost:3847${c.reset} as the relay URL in the extension\n`);
+  console.log(`${dim('Concurrent builds: Run separate Claude Code sessions in separate project dirs.')}`);
+  console.log(`${dim('Each routes by siteId — they can share one relay on localhost:3847.')}`);
+  console.log('');
 }
 
 main().catch((e) => {

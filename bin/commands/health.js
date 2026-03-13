@@ -33,19 +33,9 @@ async function main() {
 
   console.log('');
 
-  // Discover collections + run health checks in parallel per site
   const sites = registry.summary();
   for (const { siteId, name } of sites) {
     const client = registry.getClient(siteId);
-
-    // Discover queue collection
-    process.stdout.write(`  ${c.bold}${name}${c.reset} — discovering queue… `);
-    try {
-      const colId = await client.discoverQueueCollection();
-      process.stdout.write(`${c.green}✓${c.reset} ${c.dim}${colId}${c.reset}\n`);
-    } catch (e) {
-      process.stdout.write(`${c.yellow}⚠${c.reset}  ${e.message}\n`);
-    }
 
     // API connectivity
     process.stdout.write(`  ${c.bold}${name}${c.reset} — Webflow API… `);
@@ -54,6 +44,49 @@ async function main() {
       process.stdout.write(`${c.green}✓${c.reset} connected (${result.siteName || siteId})\n`);
     } else {
       process.stdout.write(`${c.red}✗${c.reset} ${result.error}\n`);
+    }
+
+    // Bridge connectivity
+    process.stdout.write(`  ${c.bold}${name}${c.reset} — Bridge… `);
+    const relayUrl = registry.relayUrl;
+    try {
+      const reqRes = await fetch(
+        `${relayUrl}/bridge/request?siteId=${encodeURIComponent(siteId)}`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ type: 'ping', payload: {} }),
+        }
+      );
+      if (!reqRes.ok) {
+        process.stdout.write(`${c.yellow}⚠${c.reset}  relay returned ${reqRes.status} (is plinth dev running?)\n`);
+        continue;
+      }
+
+      // Poll for result (5s timeout)
+      const deadline = Date.now() + 5_000;
+      let bridgeOk = false;
+      while (Date.now() < deadline) {
+        await new Promise(r => setTimeout(r, 1000));
+        try {
+          const resultRes = await fetch(`${relayUrl}/bridge/result?siteId=${encodeURIComponent(siteId)}`);
+          if (resultRes.ok) {
+            const data = await resultRes.json();
+            if (data.ready && data.ok) {
+              bridgeOk = true;
+              break;
+            }
+          }
+        } catch { /* keep polling */ }
+      }
+
+      if (bridgeOk) {
+        process.stdout.write(`${c.green}✓${c.reset} connected\n`);
+      } else {
+        process.stdout.write(`${c.yellow}⚠${c.reset}  no response (Designer open? Inspector extension installed?)\n`);
+      }
+    } catch (e) {
+      process.stdout.write(`${c.red}✗${c.reset} relay not reachable at ${relayUrl} (run plinth dev)\n`);
     }
   }
 
