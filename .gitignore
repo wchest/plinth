@@ -3,6 +3,4 @@ node_modules/
 mcp-server/sites.json
 .plinth.json
 dist/
-extension/public/bundle.js
-extension/public/bundle.js.LICENSE.txt
 .claude/

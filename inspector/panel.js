@@ -3569,7 +3569,7 @@
       const code = `
         (function() {
           // Send a request to create the element via postMessage
-          // This mimics what the Designer Extension SDK does internally
+          // This mimics what the Designer does internally via postMessage
           var msg = {
             jsonrpc: '2.0',
             id: 'plinth-inspect-' + Date.now(),
@@ -3582,7 +3582,7 @@
       `;
       const result = await evalInPage(code);
       presetsOutput.innerHTML += `<div class="info">${escHtml(result)}</div>`;
-      presetsOutput.innerHTML += '<div class="info">Note: This may only work if the Designer Extension context is active. The message traffic will reveal the internal element structure if it succeeds.</div>';
+      presetsOutput.innerHTML += '<div class="info">Note: The message traffic will reveal the internal element structure if it succeeds.</div>';
     } catch (err) {
       presetsOutput.innerHTML = `<span class="error">Error: ${escHtml(err.message)}</span>`;
     }
@@ -3767,7 +3767,7 @@
         lines.push('');
       }
     } else {
-      lines.push('No messages captured yet. Open the Designer Extension panel and re-scan.');
+      lines.push('No messages captured yet. Re-scan to capture postMessage traffic.');
     }
 
     lines.push('', '## Preset Children', '');
