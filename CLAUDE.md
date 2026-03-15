@@ -28,46 +28,48 @@ Platform-specific content script bridges convert them to native formats and past
 - `core/init-base.js` — multi-platform init flow
 - `platforms/webflow/tools.js` — Webflow MCP tool definitions
 - `platforms/webflow/client.js` — Webflow API v2 wrapper
-- `platforms/webflow/inspector/` — Chrome extension for Webflow Designer
+- `extension/` — unified Chrome extension (Webflow + Wix content scripts)
 - `platforms/webflow/skill/SKILL.md` — SectionSpec format reference
 - `platforms/wix/` — Wix platform stub
 
 ## MCP Tools Available (Webflow)
-When the MCP server is registered with a Webflow site, these tools are available:
+When the MCP server is registered with a Webflow site, these tools are available.
+All Webflow tools use the `wf_` prefix.
 
 ### Build & Verify
-- `build_section(siteId, tree, ...)` — build a section via XscpData paste (primary build tool)
-- `get_snapshot(siteId)` — structural DOM snapshot (types, IDs, classes, text)
-- `take_screenshot(siteId, sectionClass?)` — publish to staging + screenshot
-- `delete_elements(siteId, elementIds[])` — delete elements by ID
+- `wf_build_section(siteId, tree, ...)` — build a section via XscpData paste (primary build tool)
+- `wf_get_snapshot(siteId)` — structural DOM snapshot (types, IDs, classes, text)
+- `wf_take_screenshot(siteId, sectionClass?)` — publish to staging + screenshot
+- `wf_delete_elements(siteId, elementIds[])` — delete elements by ID
 
 ### Style & Variables
-- `update_styles(siteId, styles[])` — update CSS on existing named styles
-- `list_variables(siteId)` — list all style variables
-- `create_variables(siteId, variables[])` — create new style variables
+- `wf_update_styles(siteId, styles[])` — update CSS on existing named styles
+- `wf_list_variables(siteId)` — list all style variables
+- `wf_create_variables(siteId, variables[])` — create new style variables
 
 ### Page Management
-- `list_pages(siteId)` — list pages with id, title, slug
-- `create_page(siteId, name, ...)` — create a new page
-- `update_page(siteId, pageId, ...)` — update page settings/SEO
-- `switch_page(siteId, pageId)` — navigate Designer to a page
-- `get_page_dom(siteId, pageId)` — content nodes via Data API (no bridge needed)
-- `list_styles(siteId, pageId)` — CSS class names via Data API
+- `wf_list_pages(siteId)` — list pages with id, title, slug
+- `wf_create_page(siteId, name, ...)` — create a new page
+- `wf_update_page(siteId, pageId, ...)` — update page settings/SEO
+- `wf_switch_page(siteId, pageId)` — navigate Designer to a page
+- `wf_get_page_dom(siteId, pageId)` — content nodes via Data API (no bridge needed)
+- `wf_list_styles(siteId, pageId)` — CSS class names via Data API
 
 ### CMS Binding
-- `connect_collection(siteId, elementId, collectionId)` — connect Collection List to CMS
-- `bind_field(siteId, elementId, fieldSlug)` — bind CMS field to element
+- `wf_connect_collection(siteId, elementId, collectionId)` — connect Collection List to CMS
+- `wf_bind_field(siteId, elementId, fieldSlug)` — bind CMS field to element
 
 ### Advanced
-- `ping(siteId)` — check bridge connectivity
-- `probe(siteId, expr)` — evaluate JS in Designer context
-- `execute(siteId, namespace, method, args?)` — call _webflow.creators action
-- `capture_xscp(siteId, elementId)` — capture element's XscpData for replay
-- `paste_xscp(siteId, xscpData, targetElementId)` — raw XscpData paste
-- `copy_to_webflow(payload)` — copy XscpData to system clipboard
+- `wf_ping(siteId)` — check bridge connectivity
+- `wf_probe(siteId, expr)` — evaluate JS in Designer context
+- `wf_execute(siteId, namespace, method, args?)` — call _webflow.creators action
+- `wf_capture_xscp(siteId, elementId)` — capture element's XscpData for replay
+- `wf_paste_xscp(siteId, xscpData, targetElementId)` — raw XscpData paste
+- `wf_copy_to_webflow(payload)` — copy XscpData to system clipboard
+- `wf_health_check()` — check API + bridge connectivity
 
-`get_page_dom` and `list_styles` use the Webflow Data API (always work).
-All other tools require the Inspector Chrome extension and Webflow Designer open.
+`wf_get_page_dom` and `wf_list_styles` use the Webflow Data API (always work).
+All other tools require the Plinth Chrome extension and Webflow Designer open.
 
 ## SectionSpec Rules
 - Each node: `{ type, className, styles: "CSS string", text?, headingLevel?, children: [...] }`
@@ -76,32 +78,32 @@ All other tools require the Inspector Chrome extension and Webflow Designer open
 - Text content goes in `text`, not in children
 - Headings need `headingLevel` (1-6), Links/Buttons need `href`, Images need `src` + `alt`
 - Max nesting: 6 levels
-- One `build_section` call = one Section as root
+- One `wf_build_section` call = one Section as root
 - Variable references: `$Variable Name` → resolved automatically
 - Font families: `@raw<|'Instrument Serif', Georgia, serif|>`
 - Use `insertAfterSectionClass` to position after an existing section
 
 ## Workflow
-1. Orient: `get_snapshot` to see what's on canvas
-2. Prepare: `list_variables` / `create_variables` for design tokens
-3. Build one section: `build_section(siteId, tree)`
+1. Orient: `wf_get_snapshot` to see what's on canvas
+2. Prepare: `wf_list_variables` / `wf_create_variables` for design tokens
+3. Build one section: `wf_build_section(siteId, tree)`
 4. **Verify — mandatory, no skipping:**
-   - `get_snapshot` — confirm section exists, structure correct
-   - `take_screenshot(siteId, sectionClass="…")` — visual check
+   - `wf_get_snapshot` — confirm section exists, structure correct
+   - `wf_take_screenshot(siteId, sectionClass="…")` — visual check
 5. Set `insertAfterSectionClass` to the just-built section's class for the next section
 6. Repeat from step 3
 
 **Never proceed to the next section without completing both verification steps.**
 
 **Editing existing sections**:
-- Small tweaks (1–5 properties): `update_styles` — supports `breakpoint` field for responsive changes
-- Large changes or responsive overhauls: `delete_elements` + `build_section` with `responsive` fields (atomic, no bleed risk)
-- Keep `update_styles` batches to 5–10 entries max to avoid style bleed
+- Small tweaks (1–5 properties): `wf_update_styles` — supports `breakpoint` field for responsive changes
+- Large changes or responsive overhauls: `wf_delete_elements` + `wf_build_section` with `responsive` fields (atomic, no bleed risk)
+- Keep `wf_update_styles` batches to 5–10 entries max to avoid style bleed
 
 ## Setting Up for a New Project
 1. Run `plinth init` in the project directory (select platform: webflow, wix, etc.)
 2. For Webflow: get a site-level API token (Site Settings → Apps & Integrations → API Access)
-3. Install the platform's Inspector Chrome extension (load unpacked from `platforms/<name>/inspector/`)
+3. Install the Plinth Chrome extension (load unpacked from `plinth/extension/`)
 4. Run `plinth dev` to start the relay
 5. Open the platform's editor/designer
 6. Start Claude Code in the project directory

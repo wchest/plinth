@@ -12,46 +12,48 @@ The content script bridge converts them to XscpData, resolves variables, reuses 
 
 ## Tool Reference
 
+All Webflow tools use the `wf_` prefix.
+
 ### Build & Verify
 | Tool | Description |
 |------|-------------|
-| `build_section(siteId, tree, ...)` | Build a section via XscpData paste. Primary build tool. |
-| `get_snapshot(siteId)` | Structural DOM snapshot — types, IDs, classes, text. |
-| `take_screenshot(siteId, sectionClass?)` | Publish to staging + screenshot for visual verification. |
-| `delete_elements(siteId, elementIds[])` | Delete elements by ID (from get_snapshot). |
+| `wf_build_section(siteId, tree, ...)` | Build a section via XscpData paste. Primary build tool. |
+| `wf_get_snapshot(siteId)` | Structural DOM snapshot — types, IDs, classes, text. |
+| `wf_take_screenshot(siteId, sectionClass?)` | Publish to staging + screenshot for visual verification. |
+| `wf_delete_elements(siteId, elementIds[])` | Delete elements by ID (from wf_get_snapshot). |
 
 ### Style & Variables
 | Tool | Description |
 |------|-------------|
-| `update_styles(siteId, styles[])` | Update CSS on existing named styles. Supports `breakpoint` field per entry. |
-| `list_variables(siteId)` | List all style variables (names, IDs, values, types). |
-| `create_variables(siteId, variables[])` | Create new style variables (color, length, font-family, number, percentage). |
+| `wf_update_styles(siteId, styles[])` | Update CSS on existing named styles. Supports `breakpoint` field per entry. |
+| `wf_list_variables(siteId)` | List all style variables (names, IDs, values, types). |
+| `wf_create_variables(siteId, variables[])` | Create new style variables (color, length, font-family, number, percentage). |
 
 ### Page Management
 | Tool | Description |
 |------|-------------|
-| `list_pages(siteId)` | List pages with id, title, slug. |
-| `create_page(siteId, name, ...)` | Create a new page via UI simulation. |
-| `update_page(siteId, pageId, ...)` | Update page settings, SEO, OG, custom code. |
-| `switch_page(siteId, pageId)` | Navigate the Designer to a different page. |
-| `get_page_dom(siteId, pageId)` | Content nodes via Data API (no bridge needed). |
-| `list_styles(siteId, pageId)` | CSS class names via Data API (no bridge needed). |
+| `wf_list_pages(siteId)` | List pages with id, title, slug. |
+| `wf_create_page(siteId, name, ...)` | Create a new page via UI simulation. |
+| `wf_update_page(siteId, pageId, ...)` | Update page settings, SEO, OG, custom code. |
+| `wf_switch_page(siteId, pageId)` | Navigate the Designer to a different page. |
+| `wf_get_page_dom(siteId, pageId)` | Content nodes via Data API (no bridge needed). |
+| `wf_list_styles(siteId, pageId)` | CSS class names via Data API (no bridge needed). |
 
 ### CMS Binding
 | Tool | Description |
 |------|-------------|
-| `connect_collection(siteId, elementId, collectionId)` | Connect a Collection List to a CMS collection. Must call before bind_field. |
-| `bind_field(siteId, elementId, fieldSlug, gateway?)` | Bind a CMS field to an element. Gateway: `dynamoPlainTextToListOfElements` (text), `dynamoImageToAttributes` (images), `dynamoLinkToAttributes` (links). |
+| `wf_connect_collection(siteId, elementId, collectionId)` | Connect a Collection List to a CMS collection. Must call before wf_bind_field. |
+| `wf_bind_field(siteId, elementId, fieldSlug, gateway?)` | Bind a CMS field to an element. Gateway: `dynamoPlainTextToListOfElements` (text), `dynamoImageToAttributes` (images), `dynamoLinkToAttributes` (links). |
 
 ### Advanced / Debugging
 | Tool | Description |
 |------|-------------|
-| `ping(siteId)` | Check bridge connectivity. |
-| `probe(siteId, expr)` | Evaluate JS in Designer context with _webflow access. |
-| `execute(siteId, namespace, method, args?)` | Call _webflow.creators action directly. |
-| `capture_xscp(siteId, elementId)` | Capture an element's XscpData for replay. |
-| `paste_xscp(siteId, xscpData, targetElementId)` | Raw XscpData paste. |
-| `copy_to_webflow(payload)` | Copy XscpData to system clipboard for manual Ctrl+V paste. |
+| `wf_ping(siteId)` | Check bridge connectivity. |
+| `wf_probe(siteId, expr)` | Evaluate JS in Designer context with _webflow access. |
+| `wf_execute(siteId, namespace, method, args?)` | Call _webflow.creators action directly. |
+| `wf_capture_xscp(siteId, elementId)` | Capture an element's XscpData for replay. |
+| `wf_paste_xscp(siteId, xscpData, targetElementId)` | Raw XscpData paste. |
+| `wf_copy_to_webflow(payload)` | Copy XscpData to system clipboard for manual Ctrl+V paste. |
 
 ---
 
@@ -62,25 +64,25 @@ The content script bridge converts them to XscpData, resolves variables, reuses 
 Before building any sections, ensure all design token variables exist in Webflow.
 
 1. Extract colors, sizes, fonts from the design
-2. Run `list_variables` to see what's already defined
-3. Run `create_variables` for any missing tokens
+2. Run `wf_list_variables` to see what's already defined
+3. Run `wf_create_variables` for any missing tokens
 4. Variable naming convention: Title Case matching Webflow's UI (e.g. `$Forest`, `$Cream`)
 
 ### Phase 1: Clear Canvas
 
-1. `get_snapshot` — get all current elements
-2. `delete_elements` — delete all top-level element IDs (direct children of Body)
-3. `get_snapshot` — confirm page is empty
+1. `wf_get_snapshot` — get all current elements
+2. `wf_delete_elements` — delete all top-level element IDs (direct children of Body)
+3. `wf_get_snapshot` — confirm page is empty
 
 ### Phase 2: Section-by-Section Build
 
 For EACH section, in order:
 
 ```
-1. BUILD      → build_section(siteId, tree, insertAfterSectionClass?)
-2. SNAPSHOT   → get_snapshot(siteId) — confirm structure, class names, element count
-3. SCREENSHOT → take_screenshot(siteId, sectionClass) — visual comparison
-4. FIX        → If issues: update_styles / delete + rebuild
+1. BUILD      → wf_build_section(siteId, tree, insertAfterSectionClass?)
+2. SNAPSHOT   → wf_get_snapshot(siteId) — confirm structure, class names, element count
+3. SCREENSHOT → wf_take_screenshot(siteId, sectionClass) — visual comparison
+4. FIX        → If issues: wf_update_styles / delete + rebuild
 5. NEXT       → Set insertAfterSectionClass to this section's class
 ```
 
@@ -89,9 +91,9 @@ For EACH section, in order:
 ### Phase 3: Post-Build Polish
 
 - Rich text spans (colored words within headings) — manual editing or CMS binding
-- Interactions/animations — IX2 data (capture from reference with `capture_xscp`, merge on build)
-- Responsive breakpoints — `update_styles` with breakpoint-specific overrides
-- Nav/Footer — factory elements, use `capture_xscp` + `paste_xscp` from a template
+- Interactions/animations — IX2 data (capture from reference with `wf_capture_xscp`, merge on build)
+- Responsive breakpoints — `wf_update_styles` with breakpoint-specific overrides
+- Nav/Footer — factory elements, use `wf_capture_xscp` + `wf_paste_xscp` from a template
 
 ---
 
@@ -128,7 +130,7 @@ Each node in the tree:
 
 | Type | Notes |
 |------|-------|
-| Section | Root of every build. One per `build_section` call. |
+| Section | Root of every build. One per `wf_build_section` call. |
 | DivBlock | Generic div container |
 | Container | Same as DivBlock |
 | Heading | Needs `headingLevel` (1-6) |
@@ -171,7 +173,7 @@ Each node in the tree:
 - **No shorthand gap**: use `grid-column-gap` and `grid-row-gap`
 - **Units required**: `font-size: 16px` not `font-size: 16`
 
-### `build_section` Parameters
+### `wf_build_section` Parameters
 
 | Parameter | Description |
 |-----------|-------------|
@@ -215,9 +217,9 @@ Only include **overridden** properties — other properties cascade from desktop
 { "name": "container", "styles": "max-width: 1200px;", "responsive": { "small": "max-width: 100%;" } }
 ```
 
-`update_styles` also supports breakpoints — add a `breakpoint` field to each entry:
+`wf_update_styles` also supports breakpoints — add a `breakpoint` field to each entry:
 ```json
-update_styles(siteId, [
+wf_update_styles(siteId, [
   { "name": "hero-grid", "properties": { "grid-template-columns": "1fr 1fr" }, "breakpoint": "medium" },
   { "name": "hero-grid", "properties": { "grid-template-columns": "1fr" }, "breakpoint": "small" }
 ])
@@ -228,12 +230,12 @@ The viewport switches automatically and returns to desktop after all updates.
 
 | Scenario | Tool | Why |
 |----------|------|-----|
-| Building a new section | `build_section` with `responsive` fields | Atomic — all breakpoint variants set in XscpData with zero bleed risk |
-| Rebuilding an existing section | `delete_elements` + `build_section` | Clean slate, atomic responsive styles |
-| Tweaking 1–5 properties on existing styles | `update_styles` | Fast, targeted, no rebuild needed |
-| Large responsive overhaul (10+ styles) | Delete + `build_section` | `update_styles` batches >5–10 entries risk style bleed between entries |
+| Building a new section | `wf_build_section` with `responsive` fields | Atomic — all breakpoint variants set in XscpData with zero bleed risk |
+| Rebuilding an existing section | `wf_delete_elements` + `wf_build_section` | Clean slate, atomic responsive styles |
+| Tweaking 1–5 properties on existing styles | `wf_update_styles` | Fast, targeted, no rebuild needed |
+| Large responsive overhaul (10+ styles) | Delete + `wf_build_section` | `wf_update_styles` batches >5–10 entries risk style bleed between entries |
 
-**Batch limit**: Keep `update_styles` calls to 5–10 entries max. Properties can leak between adjacent entries due to async commit timing in the setStyle pipeline.
+**Batch limit**: Keep `wf_update_styles` calls to 5–10 entries max. Properties can leak between adjacent entries due to async commit timing in the setStyle pipeline.
 
 ---
 
@@ -242,7 +244,7 @@ The viewport switches automatically and returns to desktop after all updates.
 ### Creating Variables
 
 ```
-create_variables(siteId, [
+wf_create_variables(siteId, [
   { name: "Forest", type: "color", value: "#2D4A3E" },
   { name: "Cream", type: "color", value: "#FAF6F1" },
   { name: "Base Size", type: "length", value: { value: 16, unit: "px" } },
@@ -284,18 +286,18 @@ Place the CodeEmbed as the first child of the Section, or at the end.
 
 ## Factory Elements
 
-Navbar, Slider, Tabs, Dropdown, Lightbox, Map, Video, and Form elements can't be created with `build_section`. They require Webflow's internal factory initialization.
+Navbar, Slider, Tabs, Dropdown, Lightbox, Map, Video, and Form elements can't be created with `wf_build_section`. They require Webflow's internal factory initialization.
 
 ### Capture and Replay
 
 1. Create the factory element manually in Webflow Designer
-2. `capture_xscp(siteId, elementId)` — get the XscpData
+2. `wf_capture_xscp(siteId, elementId)` — get the XscpData
 3. Save the captured data for reuse
-4. `paste_xscp(siteId, xscpData, targetElementId)` — replay on other pages
+4. `wf_paste_xscp(siteId, xscpData, targetElementId)` — replay on other pages
 
 ### Alternative
 
-Create manually in Designer, then style via `update_styles`.
+Create manually in Designer, then style via `wf_update_styles`.
 
 ---
 
@@ -304,7 +306,7 @@ Create manually in Designer, then style via `update_styles`.
 REST API publish does NOT reliably update the live site for visual verification.
 Use the manual **Publish** button in the Webflow Designer for production deploys.
 
-`take_screenshot` uses staging publish which works for verification screenshots.
+`wf_take_screenshot` uses staging publish which works for verification screenshots.
 
 ---
 
@@ -315,10 +317,10 @@ Use the manual **Publish** button in the Webflow Designer for production deploys
 3. **Overlays with radial gradients** — Complex CSS gradients may not resolve. Use solid colors with opacity instead.
 4. **50% border-radius for circles** — Must use longhand: all four corners set to 50%.
 5. **Existing style reuse** — If a className matches an existing style in StyleBlockStore, the bridge reuses its `_id`. Don't emit a style entry for it or Webflow will create duplicates (" 2" suffix).
-6. **Max one root node** — Each `build_section` call creates one Section. Never pass multiple roots.
+6. **Max one root node** — Each `wf_build_section` call creates one Section. Never pass multiple roots.
 7. **Stale styles** — After deleting and rebuilding a section, old style entries may persist in StyleBlockStore. The bridge handles this by reusing existing IDs.
 8. **Font-family stripped** — See Font Workaround section above.
-9. **`update_styles` batch bleed** — When updating many styles at the same breakpoint in one call, properties can leak between adjacent entries due to async commit timing. For large batches, prefer setting responsive styles via `build_section` with `responsive` field on nodes (XscpData variants are atomic). Use `update_styles` for small targeted fixes.
+9. **`wf_update_styles` batch bleed** — When updating many styles at the same breakpoint in one call, properties can leak between adjacent entries due to async commit timing. For large batches, prefer setting responsive styles via `wf_build_section` with `responsive` field on nodes (XscpData variants are atomic). Use `wf_update_styles` for small targeted fixes.
 10. **`setStyle` and non-px values** — `setStyle({path, value:null})` clears a property from the current breakpoint variant. For percentage values, the bridge uses `{value:'100',unit:'%'}` format. `"auto"` is treated as null (clears the property). For gap properties (`grid-column-gap`, `grid-row-gap`), raw numbers get stored unitless in variant styleLess (e.g. `grid-column-gap: 24;` instead of `24px`) — the bridge now passes these as strings with units to avoid this.
 11. **`__DEPRECATED__STYLE_BLOCK_STATE_CHANGED` does not persist** — Directly mutating StyleBlockStore variants via Immutable.js and dispatching this action appears to work but reverts. Always use `setStyle` at the correct breakpoint to modify variants.
 
@@ -369,7 +371,7 @@ After each build, check:
 
 ```
 # 1. Build
-build_section(
+wf_build_section(
   siteId: "699b...",
   tree: {
     type: "Section",
@@ -404,15 +406,15 @@ build_section(
 )
 
 # 2. Verify structure
-get_snapshot(siteId: "699b...")
+wf_get_snapshot(siteId: "699b...")
 → Confirm: Section.stats-section exists after Section.approach-section
 → Confirm: expected element count
 
 # 3. Visual verify
-take_screenshot(siteId: "699b...", sectionClass: "stats-section")
+wf_take_screenshot(siteId: "699b...", sectionClass: "stats-section")
 → Compare to design
 → Fix any issues before proceeding
 
 # 4. Next section
-build_section(..., insertAfterSectionClass: "stats-section")
+wf_build_section(..., insertAfterSectionClass: "stats-section")
 ```

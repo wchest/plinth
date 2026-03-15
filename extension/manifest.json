@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "Plinth Inspector",
-  "description": "DevTools panel + Bridge for Webflow Designer",
-  "version": "0.2.0",
+  "name": "Plinth",
+  "description": "Multi-platform bridge for Webflow Designer and Wix Studio",
+  "version": "0.3.0",
   "devtools_page": "devtools.html",
   "host_permissions": ["http://localhost:3847/*"],
   "content_scripts": [
@@ -21,6 +21,22 @@
         "https://webflow.com/design/*"
       ],
       "js": ["content-isolated.js"],
+      "world": "ISOLATED",
+      "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "https://editor.wix.com/*"
+      ],
+      "js": ["wix-content-bridge.js"],
+      "world": "MAIN",
+      "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "https://editor.wix.com/*"
+      ],
+      "js": ["wix-content-isolated.js"],
       "world": "ISOLATED",
       "run_at": "document_idle"
     }
