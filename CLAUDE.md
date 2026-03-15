@@ -1,24 +1,39 @@
-# Webflow Builder (Plinth)
+# Plinth — Multi-Platform Page Builder
 
-Build complete Webflow pages by generating SectionSpec trees with inline CSS.
-A content script bridge converts them to XscpData and pastes atomically into the Designer.
+Build complete pages by generating SectionSpec trees with inline CSS.
+Platform-specific content script bridges convert them to native formats and paste atomically.
 
 ## Architecture
-- Claude generates SectionSpec trees (see skill/SKILL.md)
-- MCP tools send them to the relay (localhost:3847)
-- The Inspector Chrome extension's content scripts handle the bridge:
-  - content-bridge.js (MAIN world): builds XscpData, resolves variables, pastes
-  - content-isolated.js (ISOLATED world): polls relay, relays results
-- No Designer Extension panel needed — only the Inspector Chrome extension
+- `core/` — shared kernel (relay, MCP scaffold, site registry, helpers)
+- `platforms/<name>/` — platform-specific code (client, tools, init, inspector, skill)
+- `bin/plinth.js` — CLI entry point
+- `mcp-server/` — backward-compatible shims (point to core/)
+
+### Supported Platforms
+- **webflow** — full support (XscpData paste via _webflow.creators)
+- **wix** — experimental stub (editor automation TBD)
+
+### How It Works
+1. Claude generates SectionSpec trees (platform-agnostic JSON)
+2. MCP tools send them to the relay (localhost:3847)
+3. Platform-specific Chrome extension content scripts handle the bridge:
+   - content-bridge.js (MAIN world): builds native paste format, resolves variables, pastes
+   - content-isolated.js (ISOLATED world): polls relay, relays results
+4. Config determines which platform's tools are loaded (`platform` field in .plinth.json)
 
 ## Key Files
-- `skill/SKILL.md` — SectionSpec format, tool reference, workflow
-- `inspector/` — Chrome extension (content scripts for bridge)
-- `mcp-server/mcp.js` — MCP tool server (stdio, for Claude Code)
-- `mcp-server/index.js` — HTTP relay (localhost:3847)
+- `core/mcp-base.js` — MCP tool server (loads platform tools dynamically)
+- `core/relay.js` — HTTP relay (localhost:3847)
+- `core/site-registry.js` — platform-aware config loader
+- `core/init-base.js` — multi-platform init flow
+- `platforms/webflow/tools.js` — Webflow MCP tool definitions
+- `platforms/webflow/client.js` — Webflow API v2 wrapper
+- `platforms/webflow/inspector/` — Chrome extension for Webflow Designer
+- `platforms/webflow/skill/SKILL.md` — SectionSpec format reference
+- `platforms/wix/` — Wix platform stub
 
-## MCP Tools Available
-When the MCP server is registered, these tools are available:
+## MCP Tools Available (Webflow)
+When the MCP server is registered with a Webflow site, these tools are available:
 
 ### Build & Verify
 - `build_section(siteId, tree, ...)` — build a section via XscpData paste (primary build tool)
@@ -84,9 +99,16 @@ All other tools require the Inspector Chrome extension and Webflow Designer open
 - Keep `update_styles` batches to 5–10 entries max to avoid style bleed
 
 ## Setting Up for a New Project
-1. Get a Webflow site-level API token (Site Settings → Apps & Integrations → API Access)
-2. Run `plinth init` in the project directory
-3. Install the Inspector Chrome extension (load unpacked from plinth/inspector/)
+1. Run `plinth init` in the project directory (select platform: webflow, wix, etc.)
+2. For Webflow: get a site-level API token (Site Settings → Apps & Integrations → API Access)
+3. Install the platform's Inspector Chrome extension (load unpacked from `platforms/<name>/inspector/`)
 4. Run `plinth dev` to start the relay
-5. Open the Webflow Designer
+5. Open the platform's editor/designer
 6. Start Claude Code in the project directory
+
+## Adding a New Platform
+1. Create `platforms/<name>/` with: `client.js`, `tools.js`, `init.js`
+2. `client.js` — export a class that accepts a config object (must handle `siteId`)
+3. `tools.js` — export `{ registerTools(server, registry, helpers) }` to register MCP tools
+4. `init.js` — export `{ collectCredentials, validateCredentials, nextSteps }`
+5. Optionally add `inspector/`, `skill/`, `reference/` directories

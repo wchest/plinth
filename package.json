@@ -1,12 +1,12 @@
 {
   "name": "plinth",
-  "version": "0.2.0",
-  "description": "Webflow page builder — generate SectionSpec trees, paste via XscpData bridge",
+  "version": "0.3.0",
+  "description": "Multi-platform page builder — generate SectionSpec trees, paste via content script bridge",
   "bin": {
     "plinth": "bin/plinth.js"
   },
   "scripts": {
-    "dev": "node mcp-server/index.js"
+    "dev": "node core/relay.js"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.0.0",
@@ -20,14 +20,13 @@
   },
   "files": [
     "bin/",
+    "core/",
+    "platforms/",
     "mcp-server/",
-    "skill/",
-    "inspector/",
-    "reference/",
     "CLAUDE.md",
     "README.md"
   ],
-  "keywords": ["webflow", "page-builder", "mcp", "claude", "xscpdata"],
+  "keywords": ["webflow", "wix", "page-builder", "mcp", "claude"],
   "license": "MIT",
   "engines": {
     "node": ">=18"

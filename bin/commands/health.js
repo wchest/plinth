@@ -2,7 +2,7 @@
 
 const path = require('path');
 const fs   = require('fs');
-const SiteRegistry = require('../../mcp-server/lib/site-registry');
+const SiteRegistry = require('../../core/site-registry');
 
 const c = {
   reset:  '\x1b[0m',
@@ -17,8 +17,6 @@ function resolveConfigPath() {
   if (process.env.PLINTH_CONFIG) return path.resolve(process.env.PLINTH_CONFIG);
   const local = path.join(process.cwd(), '.plinth.json');
   if (fs.existsSync(local)) return local;
-  const central = path.join(__dirname, '../../mcp-server/sites.json');
-  if (fs.existsSync(central)) return central;
   throw new Error('No config found. Run plinth init or create .plinth.json');
 }
 
@@ -34,20 +32,24 @@ async function main() {
   console.log('');
 
   const sites = registry.summary();
-  for (const { siteId, name } of sites) {
+  for (const { siteId, name, platform } of sites) {
     const client = registry.getClient(siteId);
 
     // API connectivity
-    process.stdout.write(`  ${c.bold}${name}${c.reset} — Webflow API… `);
-    const result = await client.healthCheck();
-    if (result.connected) {
-      process.stdout.write(`${c.green}✓${c.reset} connected (${result.siteName || siteId})\n`);
+    process.stdout.write(`  ${c.bold}${name}${c.reset} (${platform}) — API… `);
+    if (client.healthCheck) {
+      const result = await client.healthCheck();
+      if (result.connected) {
+        process.stdout.write(`${c.green}✓${c.reset} connected (${result.siteName || siteId})\n`);
+      } else {
+        process.stdout.write(`${c.red}✗${c.reset} ${result.error}\n`);
+      }
     } else {
-      process.stdout.write(`${c.red}✗${c.reset} ${result.error}\n`);
+      process.stdout.write(`${c.yellow}⚠${c.reset}  healthCheck not implemented for ${platform}\n`);
     }
 
     // Bridge connectivity
-    process.stdout.write(`  ${c.bold}${name}${c.reset} — Bridge… `);
+    process.stdout.write(`  ${c.bold}${name}${c.reset} (${platform}) — Bridge… `);
     const relayUrl = registry.relayUrl;
     try {
       const reqRes = await fetch(
@@ -83,7 +85,7 @@ async function main() {
       if (bridgeOk) {
         process.stdout.write(`${c.green}✓${c.reset} connected\n`);
       } else {
-        process.stdout.write(`${c.yellow}⚠${c.reset}  no response (Designer open? Inspector extension installed?)\n`);
+        process.stdout.write(`${c.yellow}⚠${c.reset}  no response (Editor open? Extension installed?)\n`);
       }
     } catch (e) {
       process.stdout.write(`${c.red}✗${c.reset} relay not reachable at ${relayUrl} (run plinth dev)\n`);

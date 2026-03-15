@@ -1,0 +1,129 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <link rel="stylesheet" href="panel.css">
+</head>
+<body>
+  <div class="export-bar">
+    <button id="btn-full-scan" title="Run all probes (globals + react + DOM) and format as markdown">Full Scan</button>
+    <button id="btn-probe-presets" title="Systematically create each preset, capture child structures">Probe All Presets</button>
+    <span class="export-sep"></span>
+    <button id="btn-copy-findings">Copy Findings</button>
+    <button id="btn-download-findings">Download findings.md</button>
+    <span id="export-status" class="export-status"></span>
+  </div>
+
+  <nav class="tabs">
+    <button class="tab active" data-tab="globals">Globals</button>
+    <button class="tab" data-tab="messages">Messages</button>
+    <button class="tab" data-tab="elements">Elements</button>
+    <button class="tab" data-tab="presets">Presets</button>
+  </nav>
+
+  <!-- Tab: Globals -->
+  <div id="tab-globals" class="tab-content active">
+    <div class="toolbar">
+      <button id="btn-scan-window">Scan Window</button>
+      <button id="btn-find-react">Find React Roots</button>
+      <button id="btn-deep-probe" title="Deep-inspect wf, _webflow, wfenvironment, webflowInitialData">Deep Probe</button>
+      <span class="toolbar-sep"></span>
+      <button id="btn-whtml-playground" title="Explore Webflow's internal WHTML/WFDL playground">WFDL Playground</button>
+    </div>
+    <div id="globals-output" class="output"></div>
+  </div>
+
+  <!-- Tab: Messages -->
+  <div id="tab-messages" class="tab-content">
+    <div class="toolbar">
+      <label><input type="checkbox" id="filter-designer-to-ext" checked> Designer → Ext</label>
+      <label><input type="checkbox" id="filter-ext-to-designer" checked> Ext → Designer</label>
+      <input type="text" id="msg-search" placeholder="Filter by method..." class="search-input">
+      <button id="btn-msg-pause">Pause</button>
+      <button id="btn-msg-clear">Clear</button>
+    </div>
+    <div id="messages-list" class="output messages-output"></div>
+    <div id="messages-status" class="status-bar">0 messages</div>
+  </div>
+
+  <!-- Tab: Elements -->
+  <div id="tab-elements" class="tab-content">
+    <div class="toolbar">
+      <button id="btn-dump-elements">Dump All Elements</button>
+      <button id="btn-inspect-selected">Inspect Selected</button>
+      <span class="toolbar-sep"></span>
+      <button id="btn-export-wfdl" title="Probe all stores for page tree and WFDL data">Export WFDL</button>
+      <button id="btn-dump-tree" title="Extract the full AbstractNodeStore tree (page DOM)">Dump Node Tree</button>
+      <button id="btn-validate-wfdl" title="Validate a WFDL string without adding to canvas">Validate WFDL</button>
+      <button id="btn-wfdl-lab" title="Test WFDL snippets for each element type via validateWFDL">WFDL Element Lab</button>
+      <span class="toolbar-sep"></span>
+      <button id="btn-test-add" title="Test wf.addToCanvas with a simple WFDL string" style="background:#2a4a2a;color:#8f8">Test addToCanvas</button>
+      <span id="lab-status" class="export-status"></span>
+    </div>
+    <div id="elements-output" class="output"></div>
+
+    <!-- Builder: Add elements via ELEMENT_ADDED dispatch -->
+    <div class="builder-section">
+      <div class="toolbar" style="border-top:1px solid #444;padding-top:8px;margin-top:8px">
+        <strong style="color:#8f8;margin-right:8px">Builder</strong>
+        <select id="builder-type">
+          <option value="Section">Section</option>
+          <option value="DivBlock" selected>DivBlock</option>
+          <option value="Heading">Heading</option>
+          <option value="Paragraph">Paragraph</option>
+          <option value="Button">Button</option>
+          <option value="TextBlock">TextBlock</option>
+          <option value="HFlex">HFlex</option>
+          <option value="VFlex">VFlex</option>
+          <option value="Grid">Grid</option>
+          <option value="Link">Link</option>
+        </select>
+        <select id="builder-heading-level" style="width:50px;display:none">
+          <option value="1">H1</option>
+          <option value="2">H2</option>
+          <option value="3">H3</option>
+          <option value="4">H4</option>
+          <option value="5">H5</option>
+          <option value="6">H6</option>
+        </select>
+        <input type="text" id="builder-text" placeholder="Text content (optional)" class="search-input" style="flex:1">
+        <select id="builder-position">
+          <option value="append">Append to body</option>
+          <option value="after">After last child</option>
+        </select>
+        <button id="btn-builder-add" style="background:#2a4a2a;color:#8f8">Add Element</button>
+        <span class="toolbar-sep"></span>
+        <button id="btn-find-setstyle" title="Search webpack modules for StyleActionCreators.setStyle" style="background:#4a2a4a;color:#f8f">Find setStyle</button>
+        <button id="btn-test-setstyle" title="Call StyleActionCreators.setStyle on the selected element" style="background:#4a2a2a;color:#f88">Test setStyle</button>
+        <button id="btn-dump-creators" title="Enumerate all 37 _webflow.creators namespaces with methods" style="background:#3a3a2a;color:#ff8">Dump All Creators</button>
+        <span class="toolbar-sep"></span>
+        <button id="btn-spy-styles" title="Install _dispatch spy, then change a style in the Designer to capture the action" style="background:#2a3a4a;color:#8cf">Spy Styles</button>
+        <button id="btn-spy-deep-style" title="Deep-capture style payloads: full styleState diff, styleBlockState structure, rule GUIDs" style="background:#2a4a3a;color:#af8">Deep Style Spy</button>
+        <button id="btn-spy-bindings" title="Install _dispatch spy, then bind a CMS field to capture the action" style="background:#2a3a4a;color:#8cf">Spy Bindings</button>
+        <button id="btn-spy-variables" title="Install _dispatch spy, then create/edit a variable to capture the action" style="background:#2a3a4a;color:#8cf">Spy Variables</button>
+        <button id="btn-spy-all" title="Capture ALL non-noise dispatch actions" style="background:#3a2a2a;color:#fa8">Spy All</button>
+      </div>
+      <div id="builder-output" class="output" style="min-height:30px"></div>
+    </div>
+
+    <div class="paste-section">
+      <label for="snapshot-paste">Paste bridge_snapshot output:</label>
+      <textarea id="snapshot-paste" rows="6" placeholder="Paste snapshot text here..."></textarea>
+      <button id="btn-parse-snapshot">Parse Snapshot</button>
+    </div>
+    <div id="snapshot-output" class="output"></div>
+  </div>
+
+  <!-- Tab: Presets -->
+  <div id="tab-presets" class="tab-content">
+    <div class="toolbar">
+      <button id="btn-list-presets">List All Presets</button>
+      <select id="preset-select"><option value="">— select preset —</option></select>
+      <button id="btn-create-preset">Create & Inspect</button>
+    </div>
+    <div id="presets-output" class="output"></div>
+  </div>
+
+  <script src="panel.js"></script>
+</body>
+</html>

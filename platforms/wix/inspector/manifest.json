@@ -1,0 +1,25 @@
+{
+  "manifest_version": 3,
+  "name": "Plinth Inspector (Wix)",
+  "description": "Content script bridge for Wix Studio Editor",
+  "version": "0.1.0",
+  "host_permissions": ["http://localhost:3847/*"],
+  "content_scripts": [
+    {
+      "matches": [
+        "https://editor.wix.com/*"
+      ],
+      "js": ["content-bridge.js"],
+      "world": "MAIN",
+      "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "https://editor.wix.com/*"
+      ],
+      "js": ["content-isolated.js"],
+      "world": "ISOLATED",
+      "run_at": "document_idle"
+    }
+  ]
+}
