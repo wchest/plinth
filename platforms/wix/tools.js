@@ -55,6 +55,22 @@ function registerTools(server, registry, { ok, fail, requestBridge, log }) {
     }
   );
 
+  // -- probe ---------------------------------------------------------------
+  server.tool(
+    'wix_probe',
+    'Evaluate a JS expression in the Wix editor context with access to documentServices (ds) and compRef helper.',
+    {
+      siteId: z.string().describe('The Wix site ID'),
+      expr: z.string().describe('JS expression to evaluate. Has access to ds (documentServices) and compRef(id) helper.'),
+    },
+    async ({ siteId, expr }) => {
+      const { result, error } = await requestBridge(siteId, 'probe', { expr });
+      if (error) return fail(error);
+      if (!result.ok) return fail(result.error);
+      return ok(result.data);
+    }
+  );
+
   // -- get_snapshot -------------------------------------------------------
   server.tool(
     'wix_get_snapshot',

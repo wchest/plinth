@@ -175,6 +175,20 @@
     }
   };
 
+  // -- probe ----------------------------------------------------------------
+  handlers.probe = async (payload) => {
+    const ds = await waitForDS();
+    const { expr } = payload;
+    if (!expr) return { ok: false, error: 'payload.expr is required' };
+    try {
+      const fn = new Function('ds', 'compRef', expr);
+      const result = fn(ds, compRef);
+      return { ok: true, data: { value: result } };
+    } catch (e) {
+      return { ok: false, error: `Probe failed: ${e.message}` };
+    }
+  };
+
   // -- build_section ------------------------------------------------------
   handlers.build_section = async (payload) => {
     const ds = await waitForDS();
@@ -190,9 +204,9 @@
       // Map SectionSpec types to Wix component types
       const typeMap = {
         'Section': 'responsive.components.Section',
-        'Container': 'responsive.components.Container',
-        'Block': 'responsive.components.Container',
-        'DivBlock': 'responsive.components.Container',
+        'Container': 'mobile.core.components.Container',
+        'Block': 'mobile.core.components.Container',
+        'DivBlock': 'mobile.core.components.Container',
         'Heading': 'wysiwyg.viewer.components.WRichText',
         'Paragraph': 'wysiwyg.viewer.components.WRichText',
         'Text': 'wysiwyg.viewer.components.WRichText',
@@ -286,12 +300,17 @@
       }
       countNodes(structure);
 
+      let rootType = null;
+      try {
+        if (newComp) rootType = ds.components.getType(compRef(newComp.id || newComp));
+      } catch (_) {}
+
       return {
         ok: true,
         data: {
           nodeCount,
-          rootId: newComp?.id,
-          rootType: newComp ? ds.components.getType(newComp) : null,
+          rootId: newComp?.id || newComp || null,
+          rootType,
         },
       };
     } catch (e) {
