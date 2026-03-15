@@ -1986,6 +1986,416 @@
     return Promise.resolve(0);
   }
 
+  // ── IX2 interaction generator ──────────────────────────────────────────────
+  // Generates IX2 JSON from `interactions` fields on SectionSpec nodes.
+  // Each interaction: { trigger, animation, duration?, easing?, delay?, direction?, once? }
+  //
+  // Supported triggers: scroll-into-view, scroll-out-of-view, mouse-hover, mouse-click, page-load
+  // Supported animations: fade, slide, grow, shrink, spin, fly, pop, flip, bounce, drop
+  //   (or custom actionTypeId like STYLE_OPACITY, TRANSFORM_MOVE, etc.)
+
+  var IX2_TRIGGER_MAP = {
+    'scroll-into-view':  { eventTypeId: 'SCROLL_INTO_VIEW',  effectIn: true  },
+    'scroll-out-of-view':{ eventTypeId: 'SCROLL_OUT_OF_VIEW', effectIn: false },
+    'mouse-hover-in':    { eventTypeId: 'MOUSE_OVER',         effectIn: true  },
+    'mouse-hover-out':   { eventTypeId: 'MOUSE_OUT',          effectIn: false },
+    'mouse-click':       { eventTypeId: 'MOUSE_CLICK',        effectIn: true  },
+    'page-load':         { eventTypeId: 'PAGE_START',          effectIn: true  },
+    'page-scroll':       { eventTypeId: 'PAGE_SCROLL',         effectIn: true  }
+  };
+
+  var IX2_ANIMATION_MAP = {
+    'fade':    'FADE_EFFECT',
+    'slide':   'SLIDE_EFFECT',
+    'grow':    'GROW_EFFECT',
+    'shrink':  'SHRINK_EFFECT',
+    'spin':    'SPIN_EFFECT',
+    'fly':     'FLY_EFFECT',
+    'pop':     'POP_EFFECT',
+    'flip':    'FLIP_EFFECT',
+    'bounce':  'BOUNCE_EFFECT',
+    'drop':    'DROP_EFFECT',
+    'jiggle':  'JIGGLE_EFFECT',
+    'pulse':   'PULSE_EFFECT',
+    'blink':   'BLINK_EFFECT',
+    'rubber-band': 'RUBBER_BAND_EFFECT',
+    'jello':   'JELLO_EFFECT'
+  };
+
+  // Compound animation presets — combine multiple action items per keyframe
+  // Each returns { animId, initItems: [...], finalItems: [...] }
+  var IX2_COMPOUND_MAP = {
+    'fade-up': function (opts) {
+      var dist = opts.distance || 28;
+      return {
+        animId: 'FADE_EFFECT',
+        initItems: [
+          { actionTypeId: 'STYLE_OPACITY', config: { delay: 0, easing: '', duration: 0, target: { useEventTarget: true }, value: 0, unit: '' } },
+          { actionTypeId: 'TRANSFORM_MOVE', config: { delay: 0, easing: '', duration: 0, target: { useEventTarget: true }, yValue: dist, xValue: 0, zValue: 0 } }
+        ],
+        finalItems: [
+          { actionTypeId: 'STYLE_OPACITY', config: { delay: opts.delay, easing: opts.easing, duration: opts.duration, target: { useEventTarget: true }, value: 1, unit: '' } },
+          { actionTypeId: 'TRANSFORM_MOVE', config: { delay: opts.delay, easing: opts.easing, duration: opts.duration, target: { useEventTarget: true }, yValue: 0, xValue: 0, zValue: 0 } }
+        ]
+      };
+    },
+    'fade-down': function (opts) {
+      var dist = opts.distance || 28;
+      return {
+        animId: 'FADE_EFFECT',
+        initItems: [
+          { actionTypeId: 'STYLE_OPACITY', config: { delay: 0, easing: '', duration: 0, target: { useEventTarget: true }, value: 0, unit: '' } },
+          { actionTypeId: 'TRANSFORM_MOVE', config: { delay: 0, easing: '', duration: 0, target: { useEventTarget: true }, yValue: -dist, xValue: 0, zValue: 0 } }
+        ],
+        finalItems: [
+          { actionTypeId: 'STYLE_OPACITY', config: { delay: opts.delay, easing: opts.easing, duration: opts.duration, target: { useEventTarget: true }, value: 1, unit: '' } },
+          { actionTypeId: 'TRANSFORM_MOVE', config: { delay: opts.delay, easing: opts.easing, duration: opts.duration, target: { useEventTarget: true }, yValue: 0, xValue: 0, zValue: 0 } }
+        ]
+      };
+    },
+    'fade-left': function (opts) {
+      var dist = opts.distance || 28;
+      return {
+        animId: 'FADE_EFFECT',
+        initItems: [
+          { actionTypeId: 'STYLE_OPACITY', config: { delay: 0, easing: '', duration: 0, target: { useEventTarget: true }, value: 0, unit: '' } },
+          { actionTypeId: 'TRANSFORM_MOVE', config: { delay: 0, easing: '', duration: 0, target: { useEventTarget: true }, xValue: dist, yValue: 0, zValue: 0 } }
+        ],
+        finalItems: [
+          { actionTypeId: 'STYLE_OPACITY', config: { delay: opts.delay, easing: opts.easing, duration: opts.duration, target: { useEventTarget: true }, value: 1, unit: '' } },
+          { actionTypeId: 'TRANSFORM_MOVE', config: { delay: opts.delay, easing: opts.easing, duration: opts.duration, target: { useEventTarget: true }, xValue: 0, yValue: 0, zValue: 0 } }
+        ]
+      };
+    },
+    'fade-right': function (opts) {
+      var dist = opts.distance || 28;
+      return {
+        animId: 'FADE_EFFECT',
+        initItems: [
+          { actionTypeId: 'STYLE_OPACITY', config: { delay: 0, easing: '', duration: 0, target: { useEventTarget: true }, value: 0, unit: '' } },
+          { actionTypeId: 'TRANSFORM_MOVE', config: { delay: 0, easing: '', duration: 0, target: { useEventTarget: true }, xValue: -dist, yValue: 0, zValue: 0 } }
+        ],
+        finalItems: [
+          { actionTypeId: 'STYLE_OPACITY', config: { delay: opts.delay, easing: opts.easing, duration: opts.duration, target: { useEventTarget: true }, value: 1, unit: '' } },
+          { actionTypeId: 'TRANSFORM_MOVE', config: { delay: opts.delay, easing: opts.easing, duration: opts.duration, target: { useEventTarget: true }, xValue: 0, yValue: 0, zValue: 0 } }
+        ]
+      };
+    }
+  };
+
+  // Walk SectionSpec tree, collect interactions, return IX2 JSON
+  function generateIx2FromTree(tree) {
+    var events = [];
+    var actionLists = [];
+    var counter = 0;
+
+    function walkNode(node) {
+      if (!node) return;
+      if (node.interactions && Array.isArray(node.interactions) && node.className) {
+        for (var i = 0; i < node.interactions.length; i++) {
+          var ix = node.interactions[i];
+          var triggerInfo = IX2_TRIGGER_MAP[ix.trigger];
+          if (!triggerInfo) {
+            console.warn('[plinth-bridge] Unknown trigger: ' + ix.trigger);
+            continue;
+          }
+
+          counter++;
+          var eventId = 'e-ix-' + counter;
+          var actionListId = 'a-ix-' + counter;
+          var duration = ix.duration || 500;
+          var easing = ix.easing || 'ease';
+          var delay = ix.delay || 0;
+
+          // Check for compound animation first, then simple preset
+          var compound = IX2_COMPOUND_MAP[ix.animation];
+          var animId;
+          var actionList;
+
+          if (compound) {
+            var result = compound({ duration: duration, easing: easing, delay: delay, distance: ix.distance });
+            animId = result.animId;
+
+            // Assign IDs to action items
+            var initItems = [];
+            for (var ii = 0; ii < result.initItems.length; ii++) {
+              var item = result.initItems[ii];
+              item.id = actionListId + '-init-' + (ii + 1);
+              initItems.push(item);
+            }
+            var finalItems = [];
+            for (var fi = 0; fi < result.finalItems.length; fi++) {
+              var fitem = result.finalItems[fi];
+              fitem.id = actionListId + '-final-' + (fi + 1);
+              finalItems.push(fitem);
+            }
+
+            actionList = {
+              id: actionListId,
+              title: ix.animation + ' ' + (triggerInfo.effectIn ? 'in' : 'out'),
+              actionItemGroups: [
+                { actionItems: initItems },
+                { actionItems: finalItems }
+              ],
+              useFirstGroupAsInitialState: true,
+              createdOn: Date.now()
+            };
+          } else {
+            // Simple preset — opacity only
+            animId = IX2_ANIMATION_MAP[ix.animation] || ix.animation;
+            var initValue = triggerInfo.effectIn ? 0 : 1;
+            var finalValue = triggerInfo.effectIn ? 1 : 0;
+            actionList = {
+              id: actionListId,
+              title: (ix.animation || 'effect') + ' ' + (triggerInfo.effectIn ? 'in' : 'out'),
+              actionItemGroups: [
+                { actionItems: [{ id: actionListId + '-n-1', actionTypeId: 'STYLE_OPACITY',
+                  config: { delay: 0, easing: '', duration: 0,
+                    target: { useEventTarget: true }, value: initValue, unit: '' }
+                }]},
+                { actionItems: [{ id: actionListId + '-n-2', actionTypeId: 'STYLE_OPACITY',
+                  config: { delay: delay, easing: easing, duration: duration,
+                    target: { useEventTarget: true }, value: finalValue, unit: '' }
+                }]}
+              ],
+              useFirstGroupAsInitialState: true,
+              createdOn: Date.now()
+            };
+          }
+
+          // Build event
+          var evt = {
+            id: eventId,
+            name: '',
+            animationType: 'preset',
+            eventTypeId: triggerInfo.eventTypeId,
+            action: {
+              id: '',
+              actionTypeId: animId,
+              instant: false,
+              config: { actionListId: actionListId }
+            },
+            mediaQueries: ['main', 'medium', 'small', 'tiny'],
+            target:  { id: node.className, appliesTo: 'CLASS', styleBlockIds: [] },
+            targets: [{ id: node.className, appliesTo: 'CLASS', styleBlockIds: [] }],
+            config: {
+              loop: ix.loop || false,
+              playInReverse: ix.playInReverse || false,
+              scrollOffsetValue: ix.scrollOffset || 0,
+              scrollOffsetUnit: null,
+              delay: delay > 0 ? delay : null,
+              direction: ix.direction || null,
+              effectIn: triggerInfo.effectIn
+            },
+            createdOn: Date.now()
+          };
+
+          // Link scroll-into-view with scroll-out-of-view if specified
+          if (ix.autoStop) {
+            evt.action.config.autoStopEventId = ix.autoStop;
+          }
+
+          events.push(evt);
+          actionLists.push(actionList);
+        }
+      }
+
+      // Walk children
+      if (node.children && Array.isArray(node.children)) {
+        for (var ci = 0; ci < node.children.length; ci++) {
+          walkNode(node.children[ci]);
+        }
+      }
+    }
+
+    walkNode(tree);
+
+    if (events.length === 0) return null;
+    return { events: events, actionLists: actionLists, interactions: [] };
+  }
+
+  // Remove IX2 interactions from IX2UiStore
+  function handleRemoveInteractions(payload) {
+    var store = window._webflow.stores.IX2UiStore;
+    if (!store || !store.state) throw new Error('IX2UiStore not found');
+    var state = store.state;
+
+    if (payload && payload.eventIds && Array.isArray(payload.eventIds)) {
+      // Remove specific events and their action lists
+      var eventsToRemove = {};
+      var actionListsToRemove = {};
+      for (var i = 0; i < payload.eventIds.length; i++) {
+        eventsToRemove[payload.eventIds[i]] = true;
+      }
+      var events = state.get('events');
+      events.forEach(function (evt) {
+        var ejs = evt.toJS ? evt.toJS() : evt;
+        if (eventsToRemove[ejs.id] && ejs.action && ejs.action.config && ejs.action.config.actionListId) {
+          actionListsToRemove[ejs.action.config.actionListId] = true;
+        }
+      });
+      state = state.set('events', events.filter(function (evt) {
+        var ejs = evt.toJS ? evt.toJS() : evt;
+        return !eventsToRemove[ejs.id];
+      }));
+      var als = state.get('actionLists');
+      state = state.set('actionLists', als.filter(function (al) {
+        var ajs = al.toJS ? al.toJS() : al;
+        return !actionListsToRemove[ajs.id];
+      }));
+    } else {
+      // Clear all
+      state = state.set('events', state.get('events').clear());
+      state = state.set('actionLists', state.get('actionLists').clear());
+      state = state.set('interactions', state.get('interactions').clear());
+    }
+
+    store.state = state;
+    store.committedState = state;
+    store.emitChange();
+
+    var js = state.toJS ? state.toJS() : state;
+    return {
+      remaining: {
+        events: js.events ? js.events.length : 0,
+        actionLists: js.actionLists ? js.actionLists.length : 0
+      }
+    };
+  }
+
+  // List current IX2 interactions
+  function handleListInteractions() {
+    var store = window._webflow.stores.IX2UiStore;
+    if (!store || !store.state) throw new Error('IX2UiStore not found');
+    var js = store.state.toJS ? store.state.toJS() : store.state;
+    return {
+      events: (js.events || []).map(function (e) {
+        return {
+          id: e.id,
+          eventTypeId: e.eventTypeId,
+          actionTypeId: e.action ? e.action.actionTypeId : null,
+          targetClass: e.target ? e.target.id : null,
+          appliesTo: e.target ? e.target.appliesTo : null
+        };
+      }),
+      actionLists: (js.actionLists || []).map(function (a) {
+        return { id: a.id, title: a.title };
+      }),
+      interactions: js.interactions || []
+    };
+  }
+
+  // Add IX2 interactions to existing elements by class name.
+  // Uses paste-and-delete: pastes a carrier div with IX2 data, then removes the carrier.
+  // Each entry: { className, trigger, animation, duration?, easing?, delay?, distance? }
+  function handleAddInteractions(payload) {
+    var interactions = payload.interactions;
+    if (!interactions || !Array.isArray(interactions) || interactions.length === 0) {
+      throw new Error('payload.interactions array is required');
+    }
+
+    // Build IX2 JSON — each interaction gets its own event + action list
+    var events = [];
+    var actionLists = [];
+    var now = Date.now();
+
+    for (var i = 0; i < interactions.length; i++) {
+      var ix = interactions[i];
+      if (!ix.className || !ix.trigger) {
+        console.warn('[plinth-bridge] Skipping interaction without className/trigger');
+        continue;
+      }
+
+      var triggerInfo = IX2_TRIGGER_MAP[ix.trigger];
+      if (!triggerInfo) {
+        console.warn('[plinth-bridge] Unknown trigger: ' + ix.trigger);
+        continue;
+      }
+
+      var eventId = 'e-add-' + (i + 1);
+      var actionListId = 'a-add-' + (i + 1);
+      var duration = ix.duration || 500;
+      var easing = ix.easing || 'ease';
+      var delay = ix.delay || 0;
+
+      // Build action list
+      var compound = IX2_COMPOUND_MAP[ix.animation];
+      var animId;
+      var actionList;
+
+      if (compound) {
+        var result = compound({ duration: duration, easing: easing, delay: delay, distance: ix.distance });
+        animId = result.animId;
+        var initItems = [];
+        for (var ii = 0; ii < result.initItems.length; ii++) {
+          result.initItems[ii].id = actionListId + '-i' + (ii + 1);
+          initItems.push(result.initItems[ii]);
+        }
+        var finalItems = [];
+        for (var fi = 0; fi < result.finalItems.length; fi++) {
+          result.finalItems[fi].id = actionListId + '-f' + (fi + 1);
+          finalItems.push(result.finalItems[fi]);
+        }
+        actionList = {
+          id: actionListId,
+          title: ix.className + ' ' + ix.animation,
+          actionItemGroups: [{ actionItems: initItems }, { actionItems: finalItems }],
+          useFirstGroupAsInitialState: true,
+          createdOn: now
+        };
+      } else {
+        animId = IX2_ANIMATION_MAP[ix.animation] || ix.animation;
+        var initValue = triggerInfo.effectIn ? 0 : 1;
+        var finalValue = triggerInfo.effectIn ? 1 : 0;
+        actionList = {
+          id: actionListId,
+          title: ix.className + ' ' + (ix.animation || 'effect'),
+          actionItemGroups: [
+            { actionItems: [{ id: actionListId + '-i1', actionTypeId: 'STYLE_OPACITY',
+              config: { delay: 0, easing: '', duration: 0, target: { useEventTarget: true }, value: initValue, unit: '' } }] },
+            { actionItems: [{ id: actionListId + '-f1', actionTypeId: 'STYLE_OPACITY',
+              config: { delay: delay, easing: easing, duration: duration, target: { useEventTarget: true }, value: finalValue, unit: '' } }] }
+          ],
+          useFirstGroupAsInitialState: true,
+          createdOn: now
+        };
+      }
+
+      events.push({
+        id: eventId, name: '', animationType: 'custom',
+        eventTypeId: triggerInfo.eventTypeId,
+        action: { id: '', actionTypeId: '0', instant: false, config: { actionListId: actionListId, affectedElements: {}, playInReverse: false, autoStopEventId: '' } },
+        mediaQueries: ['main', 'medium', 'small', 'tiny'],
+        target: { id: ix.className, appliesTo: 'CLASS', styleBlockIds: [] },
+        targets: [{ id: ix.className, appliesTo: 'CLASS', styleBlockIds: [] }],
+        config: {
+          loop: ix.loop || false, playInReverse: false,
+          scrollOffsetValue: ix.scrollOffset || 0, scrollOffsetUnit: null,
+          delay: delay > 0 ? delay : null, direction: ix.direction || null,
+          effectIn: triggerInfo.effectIn
+        },
+        createdOn: now
+      });
+      actionLists.push(actionList);
+    }
+
+    if (events.length === 0) throw new Error('No valid interactions to add');
+
+    // Return XscpData with carrier div — MCP tool handles paste + cleanup
+    var carrierId = crypto.randomUUID();
+    var xscpData = {
+      type: '@webflow/XscpData',
+      payload: {
+        nodes: [{ _id: carrierId, tag: 'div', classes: [], children: [], type: 'Block', data: { tag: 'div', text: false } }],
+        styles: [], assets: [], ix1: [],
+        ix2: { interactions: [], events: events, actionLists: actionLists }
+      },
+      meta: { unlinkedSymbolCount: 0, droppedLinks: 0, dynBindRemovedCount: 0, dynListBindRemovedCount: 0, paginationRemovedCount: 0 }
+    };
+
+    return { added: events.length, xscpData: xscpData };
+  }
+
   function handleBuildV2(payload) {
     var tree = payload.tree;
     if (!tree) throw new Error('payload.tree is required');
@@ -2018,9 +2428,22 @@
       }
     };
 
-    // Merge ix2 data if provided
-    if (payload.ix2) {
-      xscpData.payload.ix2 = payload.ix2;
+    // Generate IX2 from tree interactions fields (if any nodes have them)
+    var generatedIx2 = generateIx2FromTree(tree);
+
+    // Merge ix2 data: explicit payload.ix2 takes priority, generated IX2 is added
+    if (payload.ix2 || generatedIx2) {
+      var mergedIx2 = { events: [], actionLists: [], interactions: [] };
+      if (generatedIx2) {
+        mergedIx2.events = mergedIx2.events.concat(generatedIx2.events);
+        mergedIx2.actionLists = mergedIx2.actionLists.concat(generatedIx2.actionLists);
+      }
+      if (payload.ix2) {
+        mergedIx2.events = mergedIx2.events.concat(payload.ix2.events || []);
+        mergedIx2.actionLists = mergedIx2.actionLists.concat(payload.ix2.actionLists || []);
+        mergedIx2.interactions = mergedIx2.interactions.concat(payload.ix2.interactions || []);
+      }
+      xscpData.payload.ix2 = mergedIx2;
     }
 
     // Find insertion target
@@ -2638,6 +3061,15 @@
           break;
         case 'update_styles':
           result = handleUpdateStyles(msg.payload || {});
+          break;
+        case 'list_interactions':
+          result = handleListInteractions();
+          break;
+        case 'remove_interactions':
+          result = handleRemoveInteractions(msg.payload || {});
+          break;
+        case 'add_interactions':
+          result = handleAddInteractions(msg.payload || {});
           break;
         default:
           throw new Error('Unknown command type: ' + type);

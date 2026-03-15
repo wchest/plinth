@@ -224,7 +224,16 @@ update_styles(siteId, [
 ```
 The viewport switches automatically and returns to desktop after all updates.
 
-**Important**: Keep `update_styles` batches small (5–10 entries) to avoid style bleed between entries. For full-page responsive styling, prefer `build_section` with `responsive` fields on nodes — variants are set atomically in XscpData with no bleed risk.
+### When to use which
+
+| Scenario | Tool | Why |
+|----------|------|-----|
+| Building a new section | `build_section` with `responsive` fields | Atomic — all breakpoint variants set in XscpData with zero bleed risk |
+| Rebuilding an existing section | `delete_elements` + `build_section` | Clean slate, atomic responsive styles |
+| Tweaking 1–5 properties on existing styles | `update_styles` | Fast, targeted, no rebuild needed |
+| Large responsive overhaul (10+ styles) | Delete + `build_section` | `update_styles` batches >5–10 entries risk style bleed between entries |
+
+**Batch limit**: Keep `update_styles` calls to 5–10 entries max. Properties can leak between adjacent entries due to async commit timing in the setStyle pipeline.
 
 ---
 

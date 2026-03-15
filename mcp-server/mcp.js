@@ -481,12 +481,15 @@ async function main() {
     'Variable references ($var-name) are resolved to Webflow variable UUIDs automatically. ' +
     'Existing styles are reused by name (no duplicates). Shorthand CSS is allowed. ' +
     'Supports responsive breakpoints via `responsive` field on each node. ' +
+    'Supports IX2 interactions via `interactions` field on nodes: ' +
+    '[{ trigger: "scroll-into-view"|"mouse-hover-in"|"page-load"|..., animation: "fade"|"slide"|"grow"|"pop"|..., duration?: 500, easing?: "ease", delay?: 0 }]. ' +
     'Returns node/style counts. Use get_snapshot + take_screenshot to verify.',
     {
       siteId: z.string().describe('The Webflow site ID'),
       tree: z.record(z.any()).describe(
         'Root element: { type, className, styles: "CSS string", ' +
         'responsive?: { medium?: "CSS overrides", small?: "CSS overrides", tiny?: "CSS overrides" }, ' +
+        'interactions?: [{ trigger, animation, duration?, easing?, delay? }], ' +
         'text?, headingLevel?, href?, src?, alt?, children?: [...] }'
       ),
       sharedStyles: z.array(z.record(z.any())).optional().describe(
@@ -709,6 +712,127 @@ async function main() {
       msg += JSON.stringify(d.created, null, 2);
       if (d.errors) msg += `\nErrors:\n${JSON.stringify(d.errors, null, 2)}`;
       return ok(msg);
+    }
+  );
+
+  // ── add_interactions ─────────────────────────────────────────────
+  server.tool(
+    'add_interactions',
+    'Add IX2 interactions to existing elements by class name. ' +
+    'Pastes IX2 data via a carrier div (auto-deleted). Each entry targets a class. ' +
+    'Triggers: scroll-into-view, scroll-out-of-view, mouse-hover-in, mouse-hover-out, mouse-click, page-load, page-scroll. ' +
+    'Animations: fade, fade-up, fade-down, fade-left, fade-right, slide, grow, shrink, spin, fly, pop, flip, bounce, drop. ' +
+    'Compound animations (fade-up etc.) combine opacity + transform.',
+    {
+      siteId: z.string().describe('The Webflow site ID'),
+      interactions: z.array(z.object({
+        className: z.string().describe('CSS class to target (must exist on page)'),
+        trigger: z.string().describe('Trigger type: scroll-into-view, page-load, mouse-hover-in, etc.'),
+        animation: z.string().describe('Animation: fade-up, fade, slide, grow, pop, etc.'),
+        duration: z.number().optional().describe('Animation duration in ms (default: 500)'),
+        easing: z.string().optional().describe('Easing function (default: ease)'),
+        delay: z.number().optional().describe('Delay before animation in ms (default: 0)'),
+        distance: z.number().optional().describe('Move distance in px for fade-up/down/left/right (default: 28)'),
+      })).describe('Array of interactions to add'),
+    },
+    async ({ siteId, interactions }) => {
+      // Step 1: Build IX2 XscpData via bridge (no paste — just returns JSON)
+      const { result, error } = await requestBridge(siteId, 'add_interactions', { interactions }, 15_000);
+      if (error) return fail(error);
+      if (!result.ok) return fail(result.error);
+      const d = result.data;
+
+      // Step 2: Get body ID from snapshot tree (first line: "Body#<id>")
+      const snap = await requestBridge(siteId, 'snapshot', {}, 10_000);
+      if (snap.error) return fail(`Built IX2 but snapshot failed: ${snap.error}`);
+      const tree = snap.result?.data?.summary;
+      const bodyMatch = tree && tree.match(/^Body#([a-f0-9-]+)/);
+      if (!bodyMatch) return fail('Built IX2 but could not find body element ID');
+      const bodyId = bodyMatch[1];
+
+      // Step 3: Paste XscpData onto body
+      const paste = await requestBridge(siteId, 'paste', {
+        xscpData: d.xscpData,
+        targetElementId: bodyId,
+      }, 15_000);
+      if (paste.error) return fail(`Built IX2 but paste failed: ${paste.error}`);
+
+      // Step 4: Find and delete carrier (classless DivBlock at end of body)
+      await new Promise(r => setTimeout(r, 1000));
+      const snap2 = await requestBridge(siteId, 'snapshot', {}, 10_000);
+      const tree2 = snap2.result?.data?.summary;
+      if (tree2) {
+        const lines = tree2.split('\n');
+        const bodyChildren = [];
+        let inBody = false;
+        for (const line of lines) {
+          if (line.startsWith('Body#')) { inBody = true; continue; }
+          if (inBody && !line.startsWith('  ')) break;
+          if (inBody && line.startsWith('  ') && !line.startsWith('    ')) {
+            const m = line.match(/#([a-f0-9-]+)/);
+            const hasClass = line.includes('.');
+            if (m) bodyChildren.push({ id: m[1], hasClass });
+          }
+        }
+        const last = bodyChildren[bodyChildren.length - 1];
+        if (last && !last.hasClass) {
+          const del = await requestBridge(siteId, 'delete', { elementIds: [last.id] }, 10_000);
+          if (del.result?.ok) {
+            return ok(`Added ${d.added} interaction(s). Carrier div removed.`);
+          }
+        }
+      }
+
+      return ok(`Added ${d.added} interaction(s). Carrier div may need manual deletion.`);
+    }
+  );
+
+  // ── list_interactions ────────────────────────────────────────────
+  server.tool(
+    'list_interactions',
+    'List all IX2 interactions on the current page. Returns events (triggers), ' +
+    'action lists (animations), and interactions. Use to audit existing interactions.',
+    {
+      siteId: z.string().describe('The Webflow site ID'),
+    },
+    async ({ siteId }) => {
+      const { result, error } = await requestBridge(siteId, 'list_interactions', {}, 10_000);
+      if (error) return fail(error);
+      if (!result.ok) return fail(result.error);
+      const d = result.data;
+      let msg = `Events: ${d.events.length}, Action Lists: ${d.actionLists.length}, Interactions: ${d.interactions.length}`;
+      if (d.events.length > 0) {
+        msg += '\n\nEvents:';
+        for (const e of d.events) {
+          msg += `\n  ${e.id}: ${e.eventTypeId} → ${e.actionTypeId} on .${e.targetClass} (${e.appliesTo})`;
+        }
+      }
+      if (d.actionLists.length > 0) {
+        msg += '\n\nAction Lists:';
+        for (const a of d.actionLists) {
+          msg += `\n  ${a.id}: ${a.title}`;
+        }
+      }
+      return ok(msg);
+    }
+  );
+
+  // ── remove_interactions ─────────────────────────────────────────
+  server.tool(
+    'remove_interactions',
+    'Remove IX2 interactions. Pass eventIds to remove specific events (and their action lists), ' +
+    'or omit to clear all interactions on the page.',
+    {
+      siteId: z.string().describe('The Webflow site ID'),
+      eventIds: z.array(z.string()).optional().describe('Specific event IDs to remove (omit to clear all)'),
+    },
+    async ({ siteId, eventIds }) => {
+      const payload = eventIds ? { eventIds } : {};
+      const { result, error } = await requestBridge(siteId, 'remove_interactions', payload, 10_000);
+      if (error) return fail(error);
+      if (!result.ok) return fail(result.error);
+      const d = result.data;
+      return ok(`Done. Remaining: ${d.remaining.events} events, ${d.remaining.actionLists} action lists`);
     }
   );
 

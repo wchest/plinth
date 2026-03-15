@@ -78,7 +78,10 @@ All other tools require the Inspector Chrome extension and Webflow Designer open
 
 **Never proceed to the next section without completing both verification steps.**
 
-**Editing existing sections**: use `update_styles` to tweak CSS, or `delete_elements` + `build_section` to rebuild.
+**Editing existing sections**:
+- Small tweaks (1–5 properties): `update_styles` — supports `breakpoint` field for responsive changes
+- Large changes or responsive overhauls: `delete_elements` + `build_section` with `responsive` fields (atomic, no bleed risk)
+- Keep `update_styles` batches to 5–10 entries max to avoid style bleed
 
 ## Setting Up for a New Project
 1. Get a Webflow site-level API token (Site Settings → Apps & Integrations → API Access)

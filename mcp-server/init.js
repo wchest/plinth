@@ -243,6 +243,11 @@ When Claude Code is open in this directory, these tools are registered:
 
 **Never proceed to the next section without completing both verification steps.**
 
+**Editing existing sections**:
+- Small tweaks (1–5 properties): \`update_styles\` — supports \`breakpoint\` field for responsive
+- Large changes: \`delete_elements\` + \`build_section\` with \`responsive\` fields (atomic, no bleed)
+- Keep \`update_styles\` batches to 5–10 entries max
+
 ## SectionSpec Format
 Each node: \`{ type, className, styles: "CSS string", text?, headingLevel?, children: [...] }\`
 - Shorthand CSS allowed
